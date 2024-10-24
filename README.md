@@ -104,7 +104,7 @@ See [parameter_server_test.py](./torchft/parameter_server_test.py) for an exampl
 
 ```sh
 $ scripts/lint.sh
-% scripts/test.sh
+$ scripts/test.sh
 ```
 
 ## Contributing
