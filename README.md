@@ -100,13 +100,6 @@ reconfigurable ProcessGroups. This does not require/use a Lighthouse server.
 
 See [parameter_server_test.py](./torchft/parameter_server_test.py) for an example.
 
-## Tests / Lint
-
-```sh
-$ scripts/lint.sh
-$ scripts/test.sh
-```
-
 ## Contributing
 
 We welcome PRs! See the [CONTRIBUTING](./CONTRIBUTING.md) file.

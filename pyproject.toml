@@ -11,6 +11,16 @@ classifiers = [
     "Programming Language :: Python :: Implementation :: PyPy",
 ]
 dynamic = ["version"]
+dependencies = [
+    "torch"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "black",
+    "pyre-check"
+]
 
 [tool.maturin]
 features = ["pyo3/extension-module"]

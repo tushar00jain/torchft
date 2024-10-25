@@ -34,10 +34,16 @@ description is clear and has sufficient instructions to be able to reproduce the
 ## Development installation
 
 torchft is written in Python and Rust so you will need to install the Rust
-toolchain. rustup is recommended as it makes using tools such as linters much
+toolchain. [rustup](https://rustup.rs/) is recommended as it makes using tools such as linters much
 easier.
 
-See the editable installation instructions in [the README](./README.md).
+Once you have rust installed you can install the project via:
+
+```
+$ pip install -e .[dev]
+```
+
+Also see the installation instructions in [the README](./README.md).
 
 ## Pull Requests
 
@@ -55,6 +61,12 @@ We actively welcome your pull requests.
 
 ```shell
 scripts/lint.sh
+```
+
+### Tests
+
+```sh
+$ scripts/test.sh
 ```
 
 ## Contributor License Agreement ("CLA")
