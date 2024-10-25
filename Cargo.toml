@@ -7,7 +7,6 @@ edition = "2021"
 anyhow = "1.0.89"
 log = "0.4.22"
 prost = "0.13.3"
-protobuf = "2.28.0"
 pyo3 = {version="0.22.3", features = ["extension-module"]}
 slog = "2.7.0"
 slog-stdlog = "4.1.1"
