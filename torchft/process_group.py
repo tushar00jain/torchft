@@ -6,7 +6,7 @@
 
 from abc import ABC
 import logging
-from typing import Type, List, Optional
+from typing import Type, List, Optional, Callable, Tuple
 from datetime import timedelta
 
 from torch.futures import Future
@@ -192,6 +192,19 @@ class BabyWork(Work):
         return True
 
 
+class BabyWorkNCCL(BabyWork):
+    def wait(self) -> bool:
+        self._tx.put(("synchronize", self._op_id), timeout=self._timeout)
+        op_id, event = _get(self._rx, self._timeout)
+        assert op_id == self._op_id
+        assert isinstance(event, torch.cuda.Event)
+
+        # Wait on Event makes the stream wait but not the CPU thread.
+        event.wait()
+
+        return True
+
+
 class ProcessGroupBaby(ProcessGroup):
     """
     This is a process group that runs the underlying process group in a
@@ -199,15 +212,10 @@ class ProcessGroupBaby(ProcessGroup):
     shared memory or will be moved to shared memory. CUDA tensors are implicitly
     share able and don't need any changes.
 
-    If the child process is killed while an operation is running CUDA tensors
-    may leak in the current implementation.
-
-    For the NCCL backend, extra memory will be used by the subprocesses CUDA
-    context compared to running NCCL in the main process. This is typically
-    around ~1GB.
     """
 
     PG_CLASS: Type[BaseProcessGroup]
+    WORK_CLASS: Type[BabyWork] = BabyWork
 
     def __init__(self, timeout: float = 60.0) -> None:
         super().__init__(0, 1)
@@ -219,36 +227,6 @@ class ProcessGroupBaby(ProcessGroup):
         self._rx = None
 
         self._timeout = timeout
-
-    @classmethod
-    def _worker(
-        cls, store_addr: str, rank: int, world_size: int, rx: mp.Queue, tx: mp.Queue
-    ) -> None:
-        try:
-            store = create_store(store_addr)
-
-            pg = cls.PG_CLASS(store, rank, world_size)
-
-            work = {}
-            next_op_id = 0
-
-            while True:
-                op = rx.get()
-                cmd = op[0]
-                if cmd == "allreduce":
-                    work[next_op_id] = pg.allreduce(op[1], op[2])
-                    tx.put(next_op_id)
-                    next_op_id += 1
-                elif cmd == "wait":
-                    op_id = op[1]
-                    work[op_id].wait()
-                    del work[op_id]
-                    tx.put(op_id)
-                else:
-                    raise ValueError(f"unknown cmd: {cmd}")
-        except Exception as e:
-            logger.exception("worker errored")
-            tx.put(e)
 
     def configure(self, store_addr: str, rank: int, world_size: int) -> None:
         if self._p is not None:
@@ -267,6 +245,61 @@ class ProcessGroupBaby(ProcessGroup):
         )
         self._p.start()
 
+    @classmethod
+    def _worker(
+        cls, store_addr: str, rank: int, world_size: int, rx: mp.Queue, tx: mp.Queue
+    ) -> None:
+        try:
+            store = create_store(store_addr)
+
+            pg = cls.PG_CLASS(store, rank, world_size)
+
+            work = {}
+            next_op_id = 0
+
+            while True:
+                op = rx.get()
+                cmd = op[0]
+                if cmd == "func":
+                    func, args, kwargs = op[1:]
+                    work[next_op_id] = getattr(pg, func)(*args, **kwargs)
+                    tx.put(next_op_id)
+                    next_op_id += 1
+                elif cmd == "wait":
+                    op_id = op[1]
+                    work[op_id].wait()
+                    del work[op_id]
+                    tx.put(op_id)
+                elif cmd == "synchronize":
+                    # CUDA only, use events instead of waiting on CPU
+                    op_id = op[1]
+
+                    # With WorkNCCL this makes the stream wait not the CPU when
+                    # no timeout is passed.
+                    work[op_id].wait()
+
+                    # Register event on the stream that we can pass to the main
+                    # process.
+                    event = torch.cuda.Event(interprocess=True)
+                    event.record()
+
+                    del work[op_id]
+                    tx.put((op_id, event))
+                else:
+                    raise ValueError(f"unknown cmd: {cmd}")
+
+        except Exception as e:
+            logger.exception("worker errored")
+            tx.put(e)
+
+    def _run_func(self, func: str, *args: object, **kwargs: object) -> Work:
+        self._tx.put(("func", func, args, kwargs), timeout=self._timeout)
+        op_id = _get(self._rx, self._timeout)
+        assert isinstance(op_id, int), f"invalid return {op_id}"
+        return self.WORK_CLASS(
+            tx=self._tx, rx=self._rx, op_id=op_id, timeout=self._timeout
+        )
+
     def allreduce(self, tensors: List[torch.Tensor], opts: object) -> Work:
         assert isinstance(tensors, list), "input must be list"
 
@@ -274,10 +307,7 @@ class ProcessGroupBaby(ProcessGroup):
             if not tensor.is_shared():
                 tensor.share_memory_()
 
-        self._tx.put(("allreduce", tensors, opts), timeout=self._timeout)
-        op_id = _get(self._rx, self._timeout)
-        assert isinstance(op_id, int), f"invalid return {op_id}"
-        return BabyWork(tx=self._tx, rx=self._rx, op_id=op_id, timeout=self._timeout)
+        return self._run_func("allreduce", tensors, opts)
 
     def size(self) -> int:
         return self._world_size
@@ -291,7 +321,23 @@ class ProcessGroupBabyGloo(ProcessGroupBaby):
 
 
 class ProcessGroupBabyNCCL(ProcessGroupBaby):
+    """
+    This is a ProcessGroup that runs NCCL in a subprocess.
+
+    For the NCCL backend, extra memory will be used by the subprocesses CUDA
+    context compared to running NCCL in the main process. This is typically
+    around ~1GB.
+
+    The returned Work objects only synchronize on the cuda stream and not on the
+    CPU side. This works by passing CUDA Events between the processes. To do a
+    CPU synchronize, call torch.cuda.synchronize() after wait().
+
+    WARNING: If the child process is killed while an operation is running, CUDA
+    tensors may leak in the current PyTorch implementation. TODO fix
+    """
+
     PG_CLASS = BaseProcessGroupGloo
+    WORK_CLASS = BabyWorkNCCL
 
     def getBackendName(self):
         return "torchft-baby-nccl"
