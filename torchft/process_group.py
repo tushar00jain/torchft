@@ -85,9 +85,10 @@ class ProcessGroup(BaseProcessGroup):
         raise NotImplementedError("not implemented")
 
 
-class ProcessGroupGloo(ProcessGroup):
+class ProcessGroupWrapper(ProcessGroup):
+    PG_CLASS: Type[BaseProcessGroup]
     """
-    This is a wrapper around ProcessGroupGloo with a reconfiguration argument.
+    This is a wrapper around any ProcessGroup with a reconfiguration method.
     """
 
     def __init__(self) -> None:
@@ -95,11 +96,15 @@ class ProcessGroupGloo(ProcessGroup):
         self._pg = None
 
     def configure(self, store_addr: str, rank: int, world_size: int) -> None:
+        if self._pg is not None:
+            if hasattr(self._pg, "abort"):
+                self._pg.abort()
+            self._pg = None
+
         store = create_store(store_addr)
 
-        # TODO: set lower timeout
-        # pyre-fixme[16]: no attribute ProcessGroupGloo
-        self._pg = BaseProcessGroupGloo(store, rank, world_size)
+        # TODO: set global timeout
+        self._pg = self.PG_CLASS(store, rank, world_size)
 
     def allreduce(self, tensors: List[torch.Tensor], opts: object) -> Work:
         return self._pg.allreduce(tensors, opts)
@@ -118,8 +123,33 @@ class ProcessGroupGloo(ProcessGroup):
     def size(self) -> int:
         return self._pg.size()
 
+
+class ProcessGroupGloo(ProcessGroupWrapper):
+    """
+    This is a reconfigurable version of ProcessGroupGloo.
+    """
+
+    PG_CLASS = BaseProcessGroupGloo
+
     def getBackendName(self) -> str:
         return "torchft-gloo"
+
+
+class ProcessGroupNCCL(ProcessGroupWrapper):
+    """
+    This is a reconfigurable version of ProcessGroupNCCL.
+
+    WARNING: this may result in deadlocks due to NCCL error handling. This is
+    provided for completeness but your mileage may vary.
+
+    TODO: verify shutdown correctness with latest NCCL. This currently will call
+    abort when reconfiguring, we need to ensure this is safe.
+    """
+
+    PG_CLASS = BaseProcessGroupNCCL
+
+    def getBackendName(self) -> str:
+        return "torchft-nccl"
 
 
 class DummyWork(dist._Work):

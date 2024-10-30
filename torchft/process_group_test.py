@@ -15,6 +15,7 @@ from torchft.process_group import (
     ProcessGroupBabyGloo,
     ProcessGroupBabyNCCL,
     ProcessGroupGloo,
+    ProcessGroupNCCL,
     ProcessGroupDummy,
     ProcessGroup,
 )
@@ -40,6 +41,37 @@ class ProcessGroupTest(TestCase):
         m = nn.Linear(3, 4)
         m = torch.nn.parallel.DistributedDataParallel(m, process_group=pg)
         m(torch.rand(2, 3))
+
+    @skipUnless(torch.cuda.is_available(), "needs CUDA")
+    def test_nccl(self) -> None:
+        store = TCPStore(
+            host_name="localhost", port=0, is_master=True, wait_for_workers=False
+        )
+        device = "cuda"
+
+        store_addr = f"localhost:{store.port}/prefix"
+        pg = ProcessGroupNCCL()
+        pg.configure(store_addr, 0, 1)
+
+        self.assertEqual(pg.size(), 1)
+
+        at = torch.tensor([2], device=device)
+        a_work = pg.allreduce([at], ReduceOp.SUM)
+        a_work.wait()
+
+        m = nn.Linear(3, 4).to(device)
+        m = torch.nn.parallel.DistributedDataParallel(m, process_group=pg)
+        m(torch.rand(2, 3, device=device))
+
+        # reconfigure
+        store_addr = f"localhost:{store.port}/prefix2"
+        pg.configure(store_addr, 0, 1)
+
+        at = torch.tensor([2], device=device)
+        a_work = pg.allreduce([at], ReduceOp.SUM)
+        a_work.wait()
+
+        torch.cuda.synchronize()
 
     def test_baby_gloo(self) -> None:
         store = TCPStore(
