@@ -32,7 +32,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional, TYPE_CHECKING
 
 import torch
 from torch.distributed import PrefixStore, ReduceOp, TCPStore, Work
@@ -41,6 +41,9 @@ from torchft.checkpointing import CheckpointServer
 
 # pyre-fixme[21]: can't find rust module
 from torchft.torchft import Manager as _Manager, ManagerClient
+
+if TYPE_CHECKING:
+    from torchft.process_group import ProcessGroup
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -58,9 +61,9 @@ class Manager:
 
     def __init__(
         self,
-        pg,
-        load_state_dict,
-        state_dict,
+        pg: "ProcessGroup",
+        load_state_dict: Callable[[object], None],
+        state_dict: Callable[[], object],
         min_replica_size: int,
         port: int = MANAGER_DEFAULT_PORT,
         use_async_quorum: bool = True,
@@ -175,15 +178,14 @@ class Manager:
         Returns:
             a Future that will be completed with the allreduced gradient
         """
-        if self._errored:
+        if self.errored():
             fut = torch.futures.Future()
             fut.set_result(grad)
             return fut
 
         self._quorum_future.result()
 
-        if self._healing:
-            assert self._use_async_quorum
+        if not self.is_participating():
             grad.zero_()
 
         # TODO: increase timeout when waiting when healing
@@ -193,37 +195,80 @@ class Manager:
             work = self._pg.allreduce([grad], ReduceOp.SUM)
             fut = work.get_future()
 
-            # schedule error handling and grad normalization as a continuation
+            # schedule grad normalization as a continuation
             # on the Future
             def callback(
                 fut: torch.futures.Future[List[torch.Tensor]],
             ) -> torch.futures.Future[torch.Tensor]:
                 nonlocal grad
 
-                try:
-                    val = fut.value()
-                except Exception:
-                    logger.exception(
-                        "got exception in all reduce future -- skipping remaining"
-                    )
-                    self._errored = True
-                    return grad
+                fut.value()
 
-                grad /= self._participating_replicas
+                grad /= self.num_participants()
 
                 return grad
 
             fut = fut.then(callback)
-            self._pending_work.append(fut)
+            fut = self.wrap_future(fut, grad)
             return fut
 
         except Exception as e:
-            logger.exception("got exception in all reduce -- skipping remaining")
-            self._errored = True
+            logger.exception(f"got exception in all reduce -- skipping remaining: {e}")
+            self.report_error()
 
             fut = torch.futures.Future()
             fut.set_result(grad)
             return fut
+
+    def report_error(self) -> None:
+        """
+        Report an error to the manager.
+
+        This will cause the manager to skip the current step and will be
+        reconfigured on the next step.
+
+        This should be called when an error occurs that leads to a corrupted
+        gradient that needs to be discarded.
+        """
+        self._errored = True
+
+    def errored(self) -> bool:
+        """
+        Get whether an error has occurred.
+
+        Returns:
+            whether an error has occurred
+        """
+        return self._errored
+
+    def wrap_future(self, fut: torch.futures.Future[object], default: object) -> None:
+        """
+        Wrap a Future and swallow any errors that occur and report them to the manager.
+
+        If an error occurs, the Future will be completed with the default value.
+
+        Args:
+            fut: the Future to wrap
+            default: the default value to complete the Future with if an error occurs
+        """
+
+        # schedule error handling and grad normalization as a continuation
+        # on the Future
+        def callback(
+            fut: torch.futures.Future[List[torch.Tensor]],
+        ) -> torch.futures.Future[torch.Tensor]:
+            nonlocal default
+
+            try:
+                return fut.value()
+            except Exception as e:
+                logger.exception(f"got exception in future -- skipping remaining: {e}")
+                self.report_error()
+                return default
+
+        fut = fut.then(callback)
+        self._pending_work.append(fut)
+        return fut
 
     def step(self) -> None:
         """
@@ -411,3 +456,26 @@ class Manager:
             the total number of batches committed
         """
         return self._batches_committed
+
+    def num_participants(self) -> int:
+        """
+        Get the number of participants in the current quorum.
+
+        This is the number of replicas participating in the current step.
+
+        Returns:
+            the number of participants in the current quorum
+        """
+        return self._participating_replicas
+
+    def is_participating(self) -> bool:
+        """
+        Get whether this replica is participating in the current quorum.
+
+        Returns:
+            whether this replica is participating in the current quorum
+        """
+        if self._healing:
+            assert self._use_async_quorum
+            return False
+        return True
