@@ -420,6 +420,34 @@ class ErrorSwallowingProcessGroupWrapper(ProcessGroupWrapper):
             return _DummyWork(tensors)
 
 
+class ManagedProcessGroup(ErrorSwallowingProcessGroupWrapper):
+    """
+    This is a wrapper around any ProcessGroup that is managed by a torchft
+    Manager.
+    """
+
+    def __init__(self, manager: "Manager") -> None:
+        super().__init__(manager._pg)
+
+        self._manager = manager
+
+    def report_error(self, e: Exception) -> None:
+        """
+        Report an error to this process group. This will cause all future
+        operations to be skipped until the process group is reconfigured via
+        ``configure``.
+
+        Args:
+            e: exception to report
+        """
+        super().report_error(e)
+
+        self._manager.report_error()
+
+    def size(self) -> int:
+        return self._manager.num_participants()
+
+
 class _BabyWork(Work):
     def __init__(
         self,

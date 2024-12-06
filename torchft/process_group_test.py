@@ -15,12 +15,14 @@ from torch import nn
 from torch._C._distributed_c10d import _resolve_process_group
 from torch.distributed import _functional_collectives, ReduceOp, TCPStore
 from torch.distributed.device_mesh import init_device_mesh
+from torchft.manager import Manager
 
 from torchft.process_group import (
     _DummyWork,
     _ErrorSwallowingWork,
     ErrorSwallowingProcessGroupWrapper,
     extend_device_mesh,
+    ManagedProcessGroup,
     ProcessGroup,
     ProcessGroupBabyGloo,
     ProcessGroupBabyNCCL,
@@ -231,3 +233,16 @@ class ProcessGroupTest(TestCase):
         work.wait()
         fut = work.get_future()
         fut.wait()
+
+    def test_managed_process_group(self) -> None:
+        manager = Mock(spec=Manager)
+        manager._pg = ProcessGroupDummy(0, 1)
+        pg = ManagedProcessGroup(manager)
+        manager.num_participants.return_value = 123
+
+        self.assertEqual(pg.size(), 123)
+
+        err = RuntimeError("test")
+        pg.report_error(err)
+        self.assertEqual(pg.error(), err)
+        self.assertEqual(manager.report_error.call_count, 1)
