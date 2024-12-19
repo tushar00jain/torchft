@@ -85,6 +85,17 @@ To run the entire suite of tests:
 $ scripts/test.sh
 ```
 
+### Build Docs
+To build the docs run:
+```sh
+pip install -r docs/requirements.txt
+cd docs
+make livehtml
+```
+
+The docs will be built in the `docs/build/html` directory and served at http://localhost:8000.
+The page will be automatically re-built as long as the process is kept running.
+
 ## Contributor License Agreement ("CLA")
 
 In order to accept your pull request, we need you to submit a CLA. You only need to do this once to work on any of
