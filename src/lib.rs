@@ -225,7 +225,16 @@ struct Lighthouse {
 #[pymethods]
 impl Lighthouse {
     #[new]
-    fn new(py: Python<'_>, bind: String, min_replicas: u64) -> PyResult<Self> {
+    fn new(
+        py: Python<'_>,
+        bind: String,
+        min_replicas: u64,
+        join_timeout_ms: Option<u64>,
+        quorum_tick_ms: Option<u64>,
+    ) -> PyResult<Self> {
+        let join_timeout_ms = join_timeout_ms.unwrap_or(100);
+        let quorum_tick_ms = quorum_tick_ms.unwrap_or(100);
+
         py.allow_threads(move || {
             let rt = Runtime::new()?;
 
@@ -233,8 +242,8 @@ impl Lighthouse {
                 .block_on(lighthouse::Lighthouse::new(lighthouse::LighthouseOpt {
                     bind: bind,
                     min_replicas: min_replicas,
-                    join_timeout_ms: 100,
-                    quorum_tick_ms: 100,
+                    join_timeout_ms: join_timeout_ms,
+                    quorum_tick_ms: quorum_tick_ms,
                 }))
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
