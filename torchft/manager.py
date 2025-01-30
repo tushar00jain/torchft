@@ -87,8 +87,8 @@ class Manager:
     def __init__(
         self,
         pg: "ProcessGroup",
-        load_state_dict: Callable[[T], None],
-        state_dict: Callable[[], T],
+        load_state_dict: Optional[Callable[[T], None]],
+        state_dict: Optional[Callable[[], T]],
         min_replica_size: int,
         use_async_quorum: bool = True,
         timeout: timedelta = timedelta(seconds=60),
@@ -144,7 +144,7 @@ class Manager:
                 transfering checkpoints to recovering replicas
         """
         self._load_state_dict = load_state_dict
-        self._state_dict = state_dict
+        self._user_state_dict = state_dict
         self._pending_state_dict: Optional[Dict[str, object]] = None
         self._use_async_quorum = use_async_quorum
         self._timeout = timeout
@@ -158,8 +158,6 @@ class Manager:
         rank = self._rank
         world_size = world_size or int(os.environ["WORLD_SIZE"])
         self._min_replica_size = min_replica_size
-
-        self._user_state_dict = state_dict
 
         if checkpoint_transport is None:
             checkpoint_transport = CheckpointServer[Dict[str, T]](
@@ -225,6 +223,12 @@ class Manager:
         # first step is 1
         self._participating_rank: Optional[int] = None
         self._participating_world_size: int = 0
+
+    def set_state_dict_fns(
+        self, load_state_dict: Callable[[T], None], state_dict: Callable[[], T]
+    ) -> None:
+        self._load_state_dict = load_state_dict
+        self._user_state_dict = state_dict
 
     def shutdown(self, wait: bool = True) -> None:
         """
@@ -531,8 +535,12 @@ class Manager:
         self._logger.info("applying pending state dict")
 
         assert self._pending_state_dict is not None, "checkpoint was not staged"
+        assert (
+            self._load_state_dict is not None
+        ), "user load_state_dict is not initialized."
         self._load_state_dict(self._pending_state_dict["user"])
         self._pending_state_dict = None
+        self._logger.info("Loaded state dict.")
 
     def should_commit(self, timeout: Optional[timedelta] = None) -> bool:
         """
@@ -602,6 +610,7 @@ class Manager:
         self._batches_committed = state_dict["batches_committed"]
 
     def _manager_state_dict(self) -> Dict[str, object]:
+        assert self._user_state_dict is not None, "user state_dict is not initialized."
         return {
             "user": self._user_state_dict(),
             "torchft": self.state_dict(),

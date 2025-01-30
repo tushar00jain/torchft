@@ -96,6 +96,37 @@ class TestManager(TestCase):
         self.assertEqual(manager.batches_committed(), 2345)
 
     @patch("torchft.manager.ManagerClient", autospec=True)
+    def test_user_state_dict(self, client_mock: MagicMock) -> None:
+        manager = self._create_manager()
+
+        self.assertEqual(
+            manager._manager_state_dict(),
+            {
+                "user": {},
+                "torchft": {
+                    "step": 0,
+                    "batches_committed": 0,
+                },
+            },
+        )
+
+        manager.set_state_dict_fns(
+            self.load_state_dict,
+            lambda: {"new_state": 1},
+        )
+
+        self.assertEqual(
+            manager._manager_state_dict(),
+            {
+                "user": {"new_state": 1},
+                "torchft": {
+                    "step": 0,
+                    "batches_committed": 0,
+                },
+            },
+        )
+
+    @patch("torchft.manager.ManagerClient", autospec=True)
     def test_quorum_happy(self, client_mock: MagicMock) -> None:
         manager = self._create_manager()
         client_mock().should_commit = mock_should_commit
