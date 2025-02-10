@@ -23,6 +23,7 @@ from torch._C._distributed_c10d import (
     AllreduceOptions,
     BroadcastOptions,
     ReduceOp,
+    ReduceScatterOptions,
     _resolve_process_group,
 )
 from torch.distributed import (
@@ -94,18 +95,28 @@ def _test_pg(
         ("allgather", (output_tensors, [input_tensor], AllgatherOptions())),
         ("broadcast", (tensor_list, BroadcastOptions())),
         ("broadcast_one", (input_tensor, 0)),
+        (
+            "reduce_scatter",
+            (output_tensors[0], [[input_tensor]], ReduceScatterOptions()),
+        ),
     ]
     works: Dict[str, dist._Work] = {}
-    for coll_str, args in collectives:
-        coll = getattr(pg, coll_str)
-        work = coll(*args)
-        works[coll_str] = work
-        work.wait()
-        fut = work.get_future()
-        fut.wait()
 
-        # Check that all tensor arguments have the expected shapes and dtypes
-        check_tensors(args)
+    for coll_str, args in collectives:
+        try:
+            coll = getattr(pg, coll_str)
+            work = coll(*args)
+            works[coll_str] = work
+            work.wait()
+            fut = work.get_future()
+            fut.wait()
+            # Check that all tensor arguments have the expected shapes and dtypes
+            check_tensors(args)
+        except RuntimeError as e:
+            if f"does not support {coll_str}" in str(e):
+                # Skip collectives that are not supported by the backend.
+                continue
+            raise e
 
     print(works)
     return works
@@ -306,7 +317,7 @@ class ProcessGroupTest(TestCase):
 
         store_addr: str = f"localhost:{store.port}/prefix"
 
-        def run(rank: int) -> Tuple[torch.Tensor, Work]:
+        def run(rank: int) -> Tuple[ProcessGroupBabyNCCL, torch.Tensor, Work]:
             a = ProcessGroupBabyNCCL(
                 timeout=timedelta(seconds=10.0),
             )
@@ -318,19 +329,29 @@ class ProcessGroupTest(TestCase):
             at = torch.tensor([rank + 1], device="cuda")
 
             a_work = a.allreduce([at], ReduceOp.SUM)
-            return at, a_work
+            return a, at, a_work
 
         with ThreadPoolExecutor(max_workers=2) as executor:
             a_fut = executor.submit(run, 0)
             b_fut = executor.submit(run, 1)
 
-        at, a_work = a_fut.result()
-        bt, b_work = b_fut.result()
+        a, at, a_work = a_fut.result()
+        b, bt, b_work = b_fut.result()
 
-        a_work.wait()
-        b_work.get_future().wait()
-
-        torch.testing.assert_close(at.cpu(), bt.cpu())
+        try:
+            a_work.wait()
+            b_work.get_future().wait()
+            torch.testing.assert_close(at.cpu(), bt.cpu())
+        finally:
+            # cleanup - first ensure that babywork is deleted before shutting down PGs
+            # note futures must be deleted as they hold references to babywork
+            del a_fut
+            del b_fut
+            del a_work
+            del b_work
+            gc.collect()
+            b.shutdown()
+            a.shutdown()
 
     def test_device_mesh(self) -> None:
         os.environ["MASTER_ADDR"] = "localhost"
