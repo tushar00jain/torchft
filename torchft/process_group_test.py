@@ -20,7 +20,10 @@ import torch.distributed as dist
 from torch import nn
 from torch._C._distributed_c10d import (
     AllgatherOptions,
+    AllreduceCoalescedOptions,
     AllreduceOptions,
+    AllToAllOptions,
+    BarrierOptions,
     BroadcastOptions,
     ReduceOp,
     ReduceScatterOptions,
@@ -88,11 +91,23 @@ def _test_pg(
             for item in arg:
                 check_tensors(item)
 
-    # Test collectives
+    # Test collectives. send/recv require multiple processes to test, so we skip them here
     collectives = [
         ("allreduce", ([input_tensor], AllreduceOptions())),
         ("allreduce", ([input_tensor], ReduceOp.SUM)),
+        ("allreduce_coalesced", ([input_tensor], AllreduceCoalescedOptions())),
         ("allgather", (output_tensors, [input_tensor], AllgatherOptions())),
+        (
+            "alltoall_base",
+            (
+                output_tensors[0][0],
+                input_tensor,
+                [input_tensor.shape[0]],
+                [input_tensor.shape[0]],
+                AllToAllOptions(),
+            ),
+        ),
+        ("barrier", (BarrierOptions(),)),
         ("broadcast", (tensor_list, BroadcastOptions())),
         ("broadcast_one", (input_tensor, 0)),
         (
@@ -120,6 +135,120 @@ def _test_pg(
 
     print(works)
     return works
+
+
+def _test_multi_pg(pg: ProcessGroup, rank: int, tensor: torch.Tensor) -> None:
+    """
+    Helper function to test a set of collective operations in settings with multiple
+    process groups.
+    """
+    # Test allgather
+    tensor_list = [
+        torch.zeros(2, dtype=torch.int64, device=tensor.device) for _ in range(2)
+    ]
+    allgather_tensor = (
+        torch.arange(2, dtype=torch.int64, device=tensor.device) + 1 + 2 * rank
+    )
+    allgather_work = pg.allgather([tensor_list], [allgather_tensor], AllgatherOptions())
+    allgather_work.wait()
+    torch.testing.assert_close(
+        tensor_list[0], torch.tensor([1, 2], device=tensor.device)
+    )
+    torch.testing.assert_close(
+        tensor_list[1], torch.tensor([3, 4], device=tensor.device)
+    )
+
+    # Test allreduce
+    tc = tensor.clone()
+    allreduce_work = pg.allreduce([tc], ReduceOp.SUM)
+    allreduce_work.wait()
+    expected_tensor = torch.tensor([3], device=tc.device)
+    torch.testing.assert_close(tc, expected_tensor)
+
+    # Test allreduce_coalesced
+    tensors = [tensor.clone(), tensor.clone() + 1]
+    allreduce_coalesced_work = pg.allreduce_coalesced(
+        tensors, AllreduceCoalescedOptions()
+    )
+    allreduce_coalesced_work.wait()
+    torch.testing.assert_close(tensors[0], torch.tensor([3], device=tensor.device))
+    torch.testing.assert_close(tensors[1], torch.tensor([5], device=tensor.device))
+
+    # Test all-to-all
+    input_tensor = torch.tensor([rank + 1, rank + 5], device=tensor.device)
+    output_tensor = torch.empty_like(input_tensor)
+    alltoall_work = pg.alltoall_base(
+        output_tensor, input_tensor, [1, 1], [1, 1], AllToAllOptions()
+    )
+    alltoall_work.wait()
+    if rank == 0:
+        expected_alltoall = torch.tensor([1, 2], device=tensor.device)
+    else:
+        expected_alltoall = torch.tensor([5, 6], device=tensor.device)
+    torch.testing.assert_close(output_tensor, expected_alltoall)
+
+    # Test broadcast
+    broadcast_tensor = tensor.clone() if rank == 0 else torch.zeros_like(tensor)
+    broadcast_work = pg.broadcast([broadcast_tensor], BroadcastOptions())
+    broadcast_work.wait()
+    expected_broadcast = torch.tensor([1], device=tensor.device)
+    torch.testing.assert_close(broadcast_tensor, expected_broadcast)
+
+    # Test broadcast_one
+    broadcast_one_tensor = tensor.clone() if rank == 0 else torch.zeros_like(tensor)
+    broadcast_one_work = pg.broadcast_one(broadcast_one_tensor, 0)
+    broadcast_one_work.wait()
+    torch.testing.assert_close(
+        broadcast_one_tensor, torch.tensor([1], device=tensor.device)
+    )
+
+    # Test barrier
+    barrier_work = pg.barrier(BarrierOptions())
+    barrier_work.wait()
+
+    # Test send/recv
+    if rank == 0:
+        send_tensor = tensor.clone()
+        send_work = pg.send([send_tensor], 1, 0)
+        send_work.wait()
+    else:
+        recv_tensor = torch.zeros_like(tensor)
+        recv_work = pg.recv([recv_tensor], 0, 0)
+        recv_work.wait()
+        expected = torch.tensor([1], device=tensor.device)
+        torch.testing.assert_close(recv_tensor, expected)
+
+    # Test reduce_scatter
+    if tensor.device.type == "cuda":
+        # reduce scatter not supported on GLOO
+        input_tensors = [
+            torch.tensor(
+                [rank + 1, rank + 3], device=tensor.device, dtype=torch.float32
+            ),
+            torch.tensor(
+                [rank + 5, rank + 7], device=tensor.device, dtype=torch.float32
+            ),
+        ]
+        output_tensor = torch.empty(2, device=tensor.device)
+        reduce_scatter_work = pg.reduce_scatter(
+            [output_tensor], [input_tensors], ReduceScatterOptions()
+        )
+        reduce_scatter_work.wait()
+        # Input tensors become:
+        # rank 0: [[1, 3], [5, 7]]
+        # rank 1: [[2, 4], [6, 8]]
+        # Therefore expected outputs are:
+        # rank 0: [1 + 2 = 3, 3 + 4 = 7]
+        # rank 1: [5 + 6 = 11, 7 + 8 = 15]
+        if rank == 0:
+            expected_reduce_scatter = torch.tensor(
+                [3, 7], device=tensor.device, dtype=torch.float32
+            )
+        else:
+            expected_reduce_scatter = torch.tensor(
+                [11, 15], device=tensor.device, dtype=torch.float32
+            )
+        torch.testing.assert_close(output_tensor, expected_reduce_scatter)
 
 
 class ProcessGroupTest(TestCase):
@@ -187,31 +316,21 @@ class ProcessGroupTest(TestCase):
 
         store_addr: str = f"localhost:{store.port}/prefix"
 
-        def run(rank: int) -> Tuple[torch.Tensor, Work]:
-            a = ProcessGroupBabyGloo()
-            a.configure(store_addr, rank, 2)
+        def run(rank: int, store_addr: str = store_addr) -> None:
+            pg = ProcessGroupBabyGloo()
+            pg.configure(store_addr, rank, 2)
 
-            self.assertEqual(a.size(), 2)
+            self.assertEqual(pg.size(), 2)
 
-            at = torch.tensor([rank + 1])
-
-            a_work = a.allreduce([at], ReduceOp.SUM)
-            return at, a_work
+            tensor = torch.tensor([rank + 1])
+            _test_multi_pg(pg, rank, tensor)
 
         with ThreadPoolExecutor(max_workers=2) as executor:
             a_fut = executor.submit(run, 0)
             b_fut = executor.submit(run, 1)
 
-        at, a_work = a_fut.result()
-        bt, b_work = b_fut.result()
-
-        a_work.wait()
-        fut = b_work.get_future()
-
-        fut.wait()
-
-        torch.testing.assert_close(at, torch.tensor([3]))
-        torch.testing.assert_close(bt, torch.tensor([3]))
+        a_fut.result()
+        b_fut.result()
 
     def test_baby_gloo_timeout(self) -> None:
         store = TCPStore(
@@ -291,16 +410,21 @@ class ProcessGroupTest(TestCase):
         store_addr = f"localhost:{store.port}/prefix"
 
         a = ProcessGroupBabyNCCL(timeout=timedelta(seconds=10))
-        a.configure(store_addr, 0, 1)
+        try:
+            a.configure(store_addr, 0, 1)
 
-        _test_pg(a, torch.randn((2, 3), device="cuda"))
+            _test_pg(a, torch.randn((2, 3), device="cuda"))
 
-        torch.cuda.synchronize()
+            torch.cuda.synchronize()
 
-        # force collection to ensure no BabyWork objects remain
-        gc.collect()
+            # force collection to ensure no BabyWork objects remain
+            gc.collect()
 
-        self.assertEqual(a.num_active_work(), 0)
+            self.assertEqual(a.num_active_work(), 0)
+        finally:
+            a.shutdown()
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
 
     def test_dummy(self) -> None:
         pg = ProcessGroupDummy(0, 1)
@@ -317,7 +441,7 @@ class ProcessGroupTest(TestCase):
 
         store_addr: str = f"localhost:{store.port}/prefix"
 
-        def run(rank: int) -> Tuple[ProcessGroupBabyNCCL, torch.Tensor, Work]:
+        def run(rank: int) -> ProcessGroupBabyNCCL:
             a = ProcessGroupBabyNCCL(
                 timeout=timedelta(seconds=10.0),
             )
@@ -327,31 +451,22 @@ class ProcessGroupTest(TestCase):
             # We test using set_device to ensure stream device is correct.
             torch.cuda.set_device(rank)
             at = torch.tensor([rank + 1], device="cuda")
-
-            a_work = a.allreduce([at], ReduceOp.SUM)
-            return a, at, a_work
+            try:
+                _test_multi_pg(a, rank, at)
+            finally:
+                a.shutdown()
+            return a
 
         with ThreadPoolExecutor(max_workers=2) as executor:
             a_fut = executor.submit(run, 0)
             b_fut = executor.submit(run, 1)
 
-        a, at, a_work = a_fut.result()
-        b, bt, b_work = b_fut.result()
+        a = a_fut.result()
+        b = b_fut.result()
 
-        try:
-            a_work.wait()
-            b_work.get_future().wait()
-            torch.testing.assert_close(at.cpu(), bt.cpu())
-        finally:
-            # cleanup - first ensure that babywork is deleted before shutting down PGs
-            # note futures must be deleted as they hold references to babywork
-            del a_fut
-            del b_fut
-            del a_work
-            del b_work
-            gc.collect()
-            b.shutdown()
-            a.shutdown()
+        # cleanup
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
 
     def test_device_mesh(self) -> None:
         os.environ["MASTER_ADDR"] = "localhost"

@@ -54,7 +54,10 @@ from torch.distributed import (
 )
 from torch.distributed.distributed_c10d import (
     AllgatherOptions,
+    AllreduceCoalescedOptions,
     AllreduceOptions,
+    AllToAllOptions,
+    BarrierOptions,
     BroadcastOptions,
     ReduceOp,
     ReduceScatterOptions,
@@ -107,29 +110,6 @@ class ProcessGroup(BaseProcessGroup):
 
         self._group_name: Optional[str] = None
 
-    def configure(self, store_addr: str, rank: int, world_size: int) -> None:
-        """
-        This reconfigures the ProcessGroup to use a new store, rank and world size.
-
-        Every time this is called it must be provided with a unique prefixed
-        store address. I.e. localhost:1234/my/prefix/1
-
-        This function will block until the underlying ProcessGroup is created.
-        If an error occurs this will throw.
-
-        Args:
-            store_addr: address of the store to use
-            rank: rank of this process
-            world_size: world size of this process group
-        """
-        raise NotImplementedError("not implemented")
-
-    # pyre-fixme[14]: inconsistent override
-    def allreduce(
-        self, tensors: List[torch.Tensor], opts: Union[AllreduceOptions, ReduceOp]
-    ) -> Work:
-        raise NotImplementedError("not implemented")
-
     # pyre-fixme[14]: inconsistent override
     def allgather(
         self,
@@ -141,6 +121,55 @@ class ProcessGroup(BaseProcessGroup):
         Gathers tensors from the whole group in a list.
 
         See torch.distributed.all_gather for more details.
+        """
+        raise NotImplementedError("not implemented")
+
+    # pyre-fixme[14]: inconsistent override
+    def allreduce(
+        self,
+        tensors: List[torch.Tensor],
+        opts: Union[AllreduceOptions, ReduceOp],
+    ) -> Work:
+        """
+        Reduces the tensor data across all machines in such a way that all get the final result.
+
+        See torch.distributed.all_reduce for more details.
+        """
+        raise NotImplementedError("not implemented")
+
+    def allreduce_coalesced(
+        self,
+        tensors: List[torch.Tensor],
+        opts: AllreduceCoalescedOptions,
+    ) -> Work:
+        """
+        Performs an all_reduce operation in a coalesced manner.
+
+        See torch.distributed.all_reduce_coalesced for more details.
+        """
+        raise NotImplementedError("not implemented")
+
+    # pyre-fixme[14]: inconsistent override
+    def alltoall_base(
+        self,
+        output_buffer: torch.Tensor,
+        input_buffer: torch.Tensor,
+        output_split_sizes: List[int],
+        input_split_sizes: List[int],
+        opts: AllToAllOptions,
+    ) -> Work:
+        """
+        Performs an all_to_all operation.
+
+        See torch.distributed.all_to_all_single for more details.
+        """
+        raise NotImplementedError("not implemented")
+
+    def barrier(self, opts: BarrierOptions) -> Work:
+        """
+        Synchronizes all processes.
+
+        See torch.distributed.barrier for more details.
         """
         raise NotImplementedError("not implemented")
 
@@ -161,6 +190,15 @@ class ProcessGroup(BaseProcessGroup):
         return self.broadcast([tensor], opts)
 
     # pyre-fixme[14]: inconsistent override
+    def recv(self, tensors: List[torch.Tensor], src_rank: int, tag: int) -> Work:
+        """
+        Receives a list of tensors from the process with rank `rank`.
+
+        See torch.distributed.recv for more details.
+        """
+        raise NotImplementedError("not implemented")
+
+    # pyre-fixme[14]: inconsistent override
     def reduce_scatter(
         self,
         output_tensors: List[torch.Tensor],
@@ -171,6 +209,32 @@ class ProcessGroup(BaseProcessGroup):
         Reduces, then scatters a list of tensors to all processes in a group.
 
         See torch.distributed.reduce_scatter for more details.
+        """
+        raise NotImplementedError("not implemented")
+
+    # pyre-fixme[14]: inconsistent override
+    def send(self, tensors: List[torch.Tensor], dst_rank: int, tag: int) -> Work:
+        """
+        Sends a list of tensors to the process with rank `dst_rank`.
+
+        See torch.distributed.send for more details.
+        """
+        raise NotImplementedError("not implemented")
+
+    def configure(self, store_addr: str, rank: int, world_size: int) -> None:
+        """
+        This reconfigures the ProcessGroup to use a new store, rank and world size.
+
+        Every time this is called it must be provided with a unique prefixed
+        store address. I.e. localhost:1234/my/prefix/1
+
+        This function will block until the underlying ProcessGroup is created.
+        If an error occurs this will throw.
+
+        Args:
+            store_addr: address of the store to use
+            rank: rank of this process
+            world_size: world size of this process group
         """
         raise NotImplementedError("not implemented")
 
@@ -268,9 +332,6 @@ class ProcessGroupWrapper(ProcessGroup):
     def _create_pg(self, store: Store, rank: int, world_size: int) -> BaseProcessGroup:
         raise NotImplementedError("not implemented")
 
-    def allreduce(self, tensors: List[torch.Tensor], opts: object) -> Work:
-        return self.parent.allreduce(tensors, opts)
-
     def allgather(
         self,
         output_tensors: List[List[torch.Tensor]],
@@ -279,8 +340,34 @@ class ProcessGroupWrapper(ProcessGroup):
     ) -> Work:
         return self.parent.allgather(output_tensors, input_tensor, opts)
 
+    def allreduce(self, tensors: List[torch.Tensor], opts: object) -> Work:
+        return self.parent.allreduce(tensors, opts)
+
+    def allreduce_coalesced(
+        self, tensors: List[torch.Tensor], opts: Union[AllreduceOptions, ReduceOp]
+    ) -> Work:
+        return self.parent.allreduce_coalesced(tensors, opts)
+
+    def alltoall_base(
+        self,
+        output_buffer: torch.Tensor,
+        input_buffer: torch.Tensor,
+        output_split_sizes: List[int],
+        input_split_sizes: List[int],
+        opts: AllToAllOptions,
+    ) -> Work:
+        return self.parent.alltoall_base(
+            output_buffer, input_buffer, output_split_sizes, input_split_sizes, opts
+        )
+
+    def barrier(self, opts: BarrierOptions) -> Work:
+        return self.parent.barrier(opts)
+
     def broadcast(self, tensor_list: List[torch.Tensor], opts: object) -> Work:
         return self.parent.broadcast(tensor_list, opts)
+
+    def recv(self, tensors: List[torch.Tensor], src_rank: int, tag: int) -> Work:
+        return self.parent.recv(tensors, src_rank, tag)
 
     def reduce_scatter(
         self,
@@ -289,6 +376,9 @@ class ProcessGroupWrapper(ProcessGroup):
         opts: object,
     ) -> Work:
         return self.parent.reduce_scatter(output_tensors, input_tensors, opts)
+
+    def send(self, tensors: List[torch.Tensor], dst_rank: int, tag: int) -> Work:
+        return self.parent.send(tensors, dst_rank, tag)
 
     def size(self) -> int:
         return self.parent.size()
@@ -414,10 +504,36 @@ class ProcessGroupDummy(ProcessGroup):
         self._work.append(res)
         return res
 
+    def allreduce_coalesced(
+        self, tensors: List[torch.Tensor], opts: Union[AllreduceOptions, ReduceOp]
+    ) -> Work:
+        res = _DummyWork(tensors)
+        self._work.append(res)
+        return res
+
+    def alltoall_base(
+        self,
+        output_buffer: torch.Tensor,
+        input_buffer: torch.Tensor,
+        output_split_sizes: List[int],
+        input_split_sizes: List[int],
+        opts: AllToAllOptions,
+    ) -> Work:
+        output_buffer.copy_(input_buffer)
+        res = _DummyWork([output_buffer])
+        self._work.append(res)
+        return res
+
+    def barrier(self, opts: BarrierOptions) -> Work:
+        return _DummyWork(None)
+
     def broadcast(self, tensor_list: List[torch.Tensor], opts: object) -> Work:
         res = _DummyWork(tensor_list)
         self._work.append(res)
         return res
+
+    def recv(self, tensors: List[torch.Tensor], src_rank: int, tag: int) -> Work:
+        return _DummyWork(None)
 
     def reduce_scatter(
         self,
@@ -431,6 +547,9 @@ class ProcessGroupDummy(ProcessGroup):
         res = _DummyWork(output_tensors)
         self._work.append(res)
         return res
+
+    def send(self, tensors: List[torch.Tensor], dst_rank: int, tag: int) -> Work:
+        return _DummyWork(None)
 
     def size(self) -> int:
         return self._world
@@ -651,6 +770,26 @@ class _OpMetadata:
                 yield
         else:
             yield
+
+
+def _maybe_share_tensors(
+    tensor: Union[List[List[torch.Tensor]], List[torch.Tensor], torch.Tensor]
+) -> None:
+    """Move a tensor / list of tensors to shared memory if not already in shared memory."""
+    if isinstance(tensor, list):
+        for t in tensor:
+            _maybe_share_tensors(t)
+    elif isinstance(tensor, torch.Tensor):
+        if not tensor.is_shared():
+            tensor.share_memory_()
+    else:
+        raise TypeError(f"expected tensor or list but got {type(tensor)}")
+
+
+def _assert_list(tensors: Union[List[torch.Tensor], List[List[torch.Tensor]]]) -> None:
+    """Assert that the input is a list of tensors or a nested list of tensors."""
+    if not isinstance(tensors, list):
+        raise TypeError(f"expected list but got {type(tensors)}")
 
 
 class ProcessGroupBaby(ProcessGroup):
@@ -979,51 +1118,71 @@ class ProcessGroupBaby(ProcessGroup):
         if not p.is_alive():
             raise RuntimeError(f"child process {p.pid=} is dead {p.exitcode=}")
 
-    def allreduce(
-        self,
-        tensors: List[torch.Tensor],
-        opts: Union[dist.AllreduceOptions, dist.ReduceOp],
-    ) -> Work:
-        assert isinstance(tensors, list), "input must be list"
-
-        for tensor in tensors:
-            if not tensor.is_shared():
-                tensor.share_memory_()
-
-        return self._run_func("allreduce", tensors, opts)
-
     def allgather(
         self,
         output_tensors: List[List[torch.Tensor]],
         input_tensor: List[torch.Tensor],
         opts: AllgatherOptions,
     ) -> Work:
-        assert isinstance(output_tensors, list), "input must be list"
-        assert isinstance(input_tensor, list), "input must be list"
-
-        for tensor_list in output_tensors:
-            for tensor in tensor_list:
-                if not tensor.is_shared():
-                    tensor.share_memory_()
-
-        for tensor in input_tensor:
-            if not tensor.is_shared():
-                tensor.share_memory_()
-
+        _assert_list(output_tensors)
+        _assert_list(input_tensor)
+        _maybe_share_tensors(output_tensors)
+        _maybe_share_tensors(input_tensor)
         return self._run_func("allgather", output_tensors, input_tensor, opts)
+
+    def allreduce(
+        self,
+        tensors: List[torch.Tensor],
+        opts: Union[dist.AllreduceOptions, dist.ReduceOp],
+    ) -> Work:
+        _assert_list(tensors)
+        _maybe_share_tensors(tensors)
+        return self._run_func("allreduce", tensors, opts)
+
+    def allreduce_coalesced(
+        self,
+        tensors: List[torch.Tensor],
+        opts: Union[dist.AllreduceCoalescedOptions, dist.ReduceOp],
+    ) -> Work:
+        _assert_list(tensors)
+        _maybe_share_tensors(tensors)
+        return self._run_func("allreduce_coalesced", tensors, opts)
+
+    def alltoall_base(
+        self,
+        output_buffer: torch.Tensor,
+        input_buffer: torch.Tensor,
+        output_split_sizes: List[int],
+        input_split_sizes: List[int],
+        opts: AllToAllOptions,
+    ) -> Work:
+        _maybe_share_tensors(output_buffer)
+        _maybe_share_tensors(input_buffer)
+        return self._run_func(
+            "alltoall_base",
+            output_buffer,
+            input_buffer,
+            output_split_sizes,
+            input_split_sizes,
+            opts,
+        )
+
+    def barrier(self, opts: BarrierOptions) -> Work:
+        return self._run_func("barrier", opts)
 
     def broadcast(
         self,
         tensor_list: List[torch.Tensor],
         opts: BroadcastOptions,
     ) -> Work:
-        assert isinstance(tensor_list, list), "input must be list"
-
-        for tensor in tensor_list:
-            if not tensor.is_shared():
-                tensor.share_memory_()
-
+        _assert_list(tensor_list)
+        _maybe_share_tensors(tensor_list)
         return self._run_func("broadcast", tensor_list, opts)
+
+    def recv(self, tensors: List[torch.Tensor], src_rank: int, tag: int) -> Work:
+        _assert_list(tensors)
+        _maybe_share_tensors(tensors)
+        return self._run_func("recv", tensors, src_rank, tag)
 
     def reduce_scatter(
         self,
@@ -1031,18 +1190,16 @@ class ProcessGroupBaby(ProcessGroup):
         input_tensors: List[List[torch.Tensor]],
         opts: ReduceScatterOptions,
     ) -> Work:
-        assert isinstance(output_tensors, list), "input must be list"
-        assert isinstance(input_tensors, list), "input must be list"
-
-        for tensor in output_tensors:
-            if not tensor.is_shared():
-                tensor.share_memory_()
-
-        for tensor_list in input_tensors:
-            for tensor in tensor_list:
-                if not tensor.is_shared():
-                    tensor.share_memory_()
+        _assert_list(output_tensors)
+        _assert_list(input_tensors)
+        _maybe_share_tensors(output_tensors)
+        _maybe_share_tensors(input_tensors)
         return self._run_func("reduce_scatter", output_tensors, input_tensors, opts)
+
+    def send(self, tensors: List[torch.Tensor], dst_rank: int, tag: int) -> Work:
+        _assert_list(tensors)
+        _maybe_share_tensors(tensors)
+        return self._run_func("send", tensors, dst_rank, tag)
 
     def size(self) -> int:
         return self._world_size
@@ -1069,8 +1226,11 @@ class _PickleSafeOptions:
         elif isinstance(
             args,
             (
-                AllreduceOptions,
                 AllgatherOptions,
+                AllreduceOptions,
+                AllreduceCoalescedOptions,
+                AllToAllOptions,
+                BarrierOptions,
                 BroadcastOptions,
                 ReduceScatterOptions,
             ),
