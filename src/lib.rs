@@ -501,26 +501,36 @@ impl LighthouseClient {
     ///
     /// Args:
     ///     replica_id (str): The string id of the replica calling quorum.
-    ///     address (str): The address of the replica calling quorum.
-    ///     store_address (str): The address of the store.
-    ///     step (int): The step of the replica calling quorum.
-    ///     world_size (int): The world size of the replica calling quorum.
-    ///     shrink_only (bool): Whether the quorum is for shrinking only.
     ///     timeout (timedelta): The timeout for quorum.
+    ///     address (str): The address of the replica calling quorum. Default: "".
+    ///     store_address (str): The address of the store. Default: "".
+    ///     step (int): The step of the replica calling quorum. Default: 0.
+    ///     world_size (int): The world size of the replica calling quorum. Default: 0.
+    ///     shrink_only (bool): Whether the quorum is for shrinking only. Default: false.
     ///     data (Optional[dict]): The data to be passed with quorum.
     ///
     /// Returns:
     ///     Quorum: Current quorum if successful.
+    #[pyo3(signature = (
+        replica_id,
+        timeout,
+        address = "".to_string(),
+        store_address = "".to_string(),
+        step = 0,
+        world_size = 0,
+        shrink_only = false,
+        data = None
+    ))]
     fn quorum<'py>(
         &self,
         py: Python<'_>,
         replica_id: String,
+        timeout: Duration,
         address: String,
         store_address: String,
         step: i64,
         world_size: u64,
         shrink_only: bool,
-        timeout: Duration,
         data: Option<&Bound<'_, PyDict>>,
     ) -> Result<Quorum, StatusError> {
         let data_string = pydict_to_string(py, data)?;
