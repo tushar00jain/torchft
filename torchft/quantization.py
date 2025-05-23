@@ -4,21 +4,29 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-unsafe
 import torch
 import torch.cuda as cuda
+
+# pyre-ignore[21]: Could not find a module corresponding to import `triton`
 import triton
+
+# pyre-ignore[21]: Could not find a module corresponding to import `triton.language`
 import triton.language as tl
+
+# pyre-ignore[21]: Could not find a module corresponding to import `triton.runtime`
 import triton.runtime as tr
 
-SCALE_DTYPE = torch.float32
-SCALE_DTYPE_BYTES = 4
+SCALE_DTYPE: torch.dtype = torch.float32
+SCALE_DTYPE_BYTES: int = 4
 SCALE_TL_DTYPE = tl.float32
 SCALE_TL_DTYPE_BYTES = tl.constexpr(4)
 TL_MAX_FP8 = tl.constexpr(448.0)
 
-BLOCK_SIZE_T = 2048
+BLOCK_SIZE_T: int = 2048
 
 
+# pyre-ignore[11]: Annotation `tl.constexpr` is not defined
 def _get_fp8_type() -> tl.constexpr:
     if cuda.get_device_capability() >= (9, 0):
         return tl.constexpr(tl.float8e4nv)
@@ -27,6 +35,7 @@ def _get_fp8_type() -> tl.constexpr:
 
 
 @triton.jit
+# pyre-ignore[11]: Annotation `tl.tensor` is not defined
 def _kernel_calculate_scale(row_max) -> tl.tensor:
     row_scale = TL_MAX_FP8 / row_max
     is_inf = row_scale == float("inf")
