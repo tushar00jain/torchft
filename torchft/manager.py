@@ -39,14 +39,37 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, TypeVar, 
 
 import torch
 from torch.distributed import ReduceOp, TCPStore
+from torch.distributed.distributed_c10d import AllreduceOptions, ReduceOp
 
 from torchft._torchft import ManagerClient, ManagerServer
 from torchft.checkpointing import CheckpointTransport, HTTPTransport
-from torchft.collectives import allreduce_quantized
 from torchft.futures import future_timeout
 
 if TYPE_CHECKING:
     from torchft.process_group import ProcessGroup
+
+try:
+    # pyre-ignore[21]: Could not find a module corresponding to import `triton`
+    import triton
+
+    from torchft.collectives import allreduce_quantized
+except ImportError:
+    from torch import cuda
+
+    def allreduce_quantized(
+        tensors: list[torch.Tensor],
+        opts: AllreduceOptions | ReduceOp,
+        process_group: "ProcessGroup",
+        sync_stream: cuda.Stream | None = None,
+    ) -> torch.futures.Future[None]:
+        work = process_group.allreduce(tensors, opts)
+        fut = work.get_future()
+
+        def callback(fut: torch.futures.Future[List[torch.Tensor]]) -> None:
+            return None
+
+        return fut.then(callback)
+
 
 MANAGER_ADDR_KEY: str = "manager_addr"
 MANAGER_PORT_ENV: str = "TORCHFT_MANAGER_PORT"
