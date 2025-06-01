@@ -176,18 +176,25 @@ class _StreamingDiLoCoFragment:
         use_bucketization: bool = False,
         bucket_cap_mb: Optional[int] = None,
         should_quantize: bool = False,
+        fragment_sync_delay: int = 0,
+        fragment_update_alpha: float = 0.0,
     ) -> None:
         self._manager = manager
         self._model_fragment = model_fragment
         self._fragment_sync_offset = fragment_sync_offset
         self._local_optimizer = inner_optimizer
-        self._local_step = 0
         self._sync_every = sync_every
         assert sync_every >= 1, "sync_every must be greater than or equal to 1"
         self._backup_device = backup_device
         self._pin_memory = pin_memory
+        self._fragment_sync_delay = fragment_sync_delay
+        self._fragment_update_alpha = fragment_update_alpha
 
         self._outer_optimizer = outer_optimizer
+
+        # Stores pending all reduce
+        self._allreduce_futures: List[torch.future.Future[None] | torch.future.Future[torch.Tensor]] = []
+        self._quorum_id: Optional[int] = None
 
         if bucket_cap_mb is not None:
             self.bucket_cap_mb = int(bucket_cap_mb * 1024 * 1024)
@@ -236,23 +243,27 @@ class _StreamingDiLoCoFragment:
                 else:
                     p.data.copy_(self.original_parameters[name], non_blocking=False)
 
-    def sync(self) -> None:
-        """
-        Synchronizes and averages the model weights across the manager.
-        """
-        self._local_step += 1
+    def wait(self) -> None:
+        for work in self._allreduce_futures:
+            work.wait()
 
-        if (self._local_step - self._fragment_sync_offset) % self._sync_every != 0:
-            return
+        self._allreduce_futures = []
 
-        self._manager.start_quorum()
-        self._perform_sync()
+    def should_prepare_fragment(self, step: int) -> bool:
+        """
+        Determines if the fragment should be asynchronously sent to other replicas
+        """
+        step_to_prepare = step - self._fragment_sync_offset
+        return step_to_prepare % self._sync_every == 0
 
-    def _perform_sync(self) -> None:
+    def should_sync_fragment(self, step: int) -> bool:
         """
-        Overrides the sync method to calculate the pseugradient, average them across the manager group, and
-        step using the outer optimizer.
+        Determines if the fragment should be synchronized with other replicas
         """
+        step_to_sync = step - self._fragment_sync_offset - self._fragment_sync_delay
+        return step_to_sync % self._sync_every == 0
+
+    def prepare_sync(self, quorum_id: int) -> None:
         # Set the .grad field of each parameter to its pseudogradient
         for name, p in self._model_fragment.named_parameters():
             local_param = extract_local_tensor(p.data)
@@ -262,14 +273,31 @@ class _StreamingDiLoCoFragment:
             else:
                 p.grad = pseudogradient
 
+        self._quorum_id = quorum_id
         self._average_grads()
+
+    def perform_sync(self) -> bool:
+        """
+        Overrides the sync method to calculate the pseugradient, average them across the manager group, and
+        step using the outer optimizer.
+        """
+        if len(self._allreduce_futures) == 0:
+            return True
+
+        self.wait()
+
         # Restore the parameters back to the previous state
         self.restore_parameters()
-        if self._manager.should_commit():
+
+        should_commit = self._manager.should_commit()
+
+        if should_commit:
             # Use the outer optimizer to update the model parameters
             self._outer_optimizer.step()
             self.save_parameters()
         self._outer_optimizer.zero_grad()
+
+        return should_commit
 
     def _average_grads(self) -> None:
         """
@@ -284,7 +312,6 @@ class _StreamingDiLoCoFragment:
 
     def _allreduce_per_param(self) -> None:
         """Performs allreduce on each gradient tensor separately (original method)."""
-        works = []
         for p in self._model_fragment.parameters():
             # Perform allreduce on the pseudogradients
             assert p.grad is not None
@@ -296,10 +323,7 @@ class _StreamingDiLoCoFragment:
                 work = self._manager.allreduce(
                     p.grad, should_quantize=self.should_quantize
                 )
-            works.append(work)
-
-        for work in works:
-            work.wait()
+            self._allreduce_futures.append(work)
 
     def bucketize_and_allreduce(
         self,
@@ -340,10 +364,14 @@ class _StreamingDiLoCoFragment:
             work = self._manager.allreduce(
                 flat_buffer, should_quantize=self.should_quantize
             )
-            work.wait()
 
-            for t, pack_offset, numel in bucket_tensors:
-                t.copy_(flat_buffer[pack_offset : pack_offset + numel].view_as(t))
+            def callback(fut: torch.futures.Future[torch.Tensor]) -> None:
+                nonlocal bucket_tensors, flat_buffer
+                for t, pack_offset, numel in bucket_tensors:
+                    t.copy_(flat_buffer[pack_offset : pack_offset + numel].view_as(t))
+
+            work = work.then(callback)
+            self._allreduce_futures.append(work)
 
             offset += chunk_size
 
@@ -433,7 +461,10 @@ class DiLoCo:
             )
 
         super().__init__()
+        self._manager = manager
+        self._fragment_sync_delay = fragment_sync_delay
 
+        self._local_step = 0
         self._hooks: List[RemovableHandle] = []
 
         self._local_optimizer = inner_optimizer
@@ -468,6 +499,10 @@ class DiLoCo:
             fragment.restore_parameters()
 
     def __enter__(self) -> "DiLoCo":
+        # Require a valid quorum before we can start training
+        self._manager.start_quorum()
+        self._local_step = self._manager.state_dict().get("local_step", 0)
+        self._zero_grad()
         # Add optimizer hook which increments the local step counter and syncs if necessary
         self._hooks.append(
             self._local_optimizer.register_step_post_hook(self._step_post_hook)
@@ -488,11 +523,105 @@ class DiLoCo:
 
         return False  # Propagate exceptions
 
+    def _zero_grad(self) -> None:
+        for fragment in self._fragments:
+            # Cancel previous sends - they should have failed since nodes
+            # made progress without us
+            fragment.wait()
+
+            for i in range(
+                self._local_step - self._fragment_sync_delay, self._local_step + 1
+            ):
+                if not fragment.should_prepare_fragment(i):
+                    continue
+
+                # TODO: Method to `prepare_sync` with zero grad
+                fragment.prepare_sync(self._manager._quorum_id)
+
+    def _recover_step(self) -> bool:
+        self._manager.start_quorum()
+
+        global_step = self._manager.state_dict().get("local_step", 0)
+        if self._local_step != global_step:
+            # If we went out of sync, we recovered from global parameters but
+            # they don't reflect information from past training data.
+            # We can crash here so that we can replay the past steps
+            # that were not synced. This will cause the current quorum to
+            # fail though. So to save on training time, we simply continue.
+            #
+            # Maybe we can do something better like being able to rollback
+            # data from the manager?
+            #
+            # We need to be in sync with the global step so that we can
+            # send and sync the same fragments as other replicas.
+            print("Lost training data - local step not in sync with global step")
+            self._local_step = global_step
+            self._zero_grad()
+            return True
+        return False
+
+
+    def _recover(self) -> None:
+        while True:
+            if self._recover_step():
+                # Fell out of sync with the global step
+                return
+
+            # - Since synchronizing failed on `_local_step`, all fragments in
+            #   flight will also fail since they were sent after the
+            #   fragment that failed to sync
+            # - Send all the fragments that failed to send previously
+            for fragment in self._fragments:
+                # Cancel previous sends
+                fragment.wait()
+
+                for i in range(
+                    self._local_step - self._fragment_sync_delay, self._local_step + 1
+                ):
+                    # We shouldn't be sending at non positive steps
+                    assert i > 0
+
+                    if not fragment.should_prepare_fragment(i):
+                        continue
+
+                    fragment.prepare_sync(self._manager._quorum_id)
+
+            # - Retry synchronizing the fragment that failed
+            # - This will be a bit slow because the we have to wait for the
+            #   new node to train
+            for fragment in self._fragments:
+                if not fragment.should_sync_fragment(self._local_step):
+                    continue
+
+                if fragment.perform_sync():
+                    return
+
     def _step_post_hook(
         self, _optim: optim.Optimizer, _args: Tuple[Any, ...], _kwargs: Dict[str, Any]
     ) -> None:
         """
         This hook is registered on the optimizer and is called after the optimizer step.
         """
+        self._local_step += 1
+
+        # Start seding fragments
         for fragment in self._fragments:
-            fragment.sync()
+            if not fragment.should_prepare_fragment(self._local_step):
+                continue
+
+            fragment.prepare_sync(self._manager._quorum_id)
+
+        # Wait for the fragments to be synchronized
+        for fragment in self._fragments:
+            if not fragment.should_sync_fragment(self._local_step):
+                continue
+
+            if fragment.perform_sync():
+                if self._recover_step():
+                    continue
+
+                if self._manager._quorum_id != fragment._quorum_id:
+                    # If the quorum id changed, we need to send to new nodes
+                    self._recover()
+
+            self._recover()

@@ -227,9 +227,13 @@ class DiLoCoTest(TestCase):
         manager.should_commit.return_value = True
 
         # Define fake allreduce: multiplies buffer by 2
-        def fake_allreduce(tensor: Tensor, should_quantize: bool) -> MagicMock:
+        def fake_allreduce(
+            tensor: Tensor, should_quantize: bool
+        ) -> torch.futures.Future[Tensor]:
             tensor.mul_(2)
-            return MagicMock(wait=lambda: None)
+            fut = torch.futures.Future()
+            fut.set_result(tensor)
+            return fut
 
         manager.allreduce.side_effect = fake_allreduce
 
