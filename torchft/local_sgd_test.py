@@ -118,6 +118,19 @@ class DiLoCoTest(TestCase):
         )
 
         manager = create_autospec(Manager)
+
+        current_local_step = 0
+
+        def local_step() -> int:
+            return current_local_step
+
+        def increment_local_step() -> None:
+            nonlocal current_local_step
+            current_local_step += 1
+
+        manager.local_step.side_effect = local_step
+        manager.increment_local_step.side_effect = increment_local_step
+
         manager._use_async_quorum = False
         with DiLoCo(
             manager, [model], inner_optimizer, outer_optimizer, sync_every=2
@@ -126,7 +139,7 @@ class DiLoCoTest(TestCase):
             initial_outer_opt_state = outer_optimizer.state_dict()
             self.assertEqual(initial_outer_opt_state["state"], {})
 
-            self.assertEqual(diloco._fragments[0]._local_step, 0)
+            self.assertEqual(manager.local_step(), 0)
             torch.testing.assert_close(
                 diloco._fragments[0].original_parameters, _params_dict(model)
             )
@@ -135,7 +148,7 @@ class DiLoCoTest(TestCase):
             loss.backward()
             inner_optimizer.step()
 
-            self.assertEqual(diloco._fragments[0]._local_step, 1)
+            self.assertEqual(manager.local_step(), 1)
             self.assertEqual(manager.start_quorum.call_count, 0)
             loss = model(inp).mean()
             loss.backward()
@@ -143,7 +156,7 @@ class DiLoCoTest(TestCase):
             self.assertEqual(manager.start_quorum.call_count, 1)
 
             manager.should_commit.return_value = True
-            self.assertEqual(diloco._fragments[0]._local_step, 2)
+            self.assertEqual(manager.local_step(), 2)
             torch.testing.assert_close(
                 diloco._fragments[0].original_parameters, _params_dict(model)
             )
@@ -175,6 +188,19 @@ class DiLoCoTest(TestCase):
         )
 
         manager = create_autospec(Manager)
+
+        current_local_step = 0
+
+        def local_step() -> int:
+            return current_local_step
+
+        def increment_local_step() -> None:
+            nonlocal current_local_step
+            current_local_step += 1
+
+        manager.local_step.side_effect = local_step
+        manager.increment_local_step.side_effect = increment_local_step
+
         manager._use_async_quorum = False
         manager.should_commit.return_value = True
 
@@ -227,9 +253,13 @@ class DiLoCoTest(TestCase):
         manager.should_commit.return_value = True
 
         # Define fake allreduce: multiplies buffer by 2
-        def fake_allreduce(tensor: Tensor, should_quantize: bool) -> MagicMock:
+        def fake_allreduce(
+            tensor: Tensor, should_quantize: bool
+        ) -> torch.futures.Future[Tensor]:
             tensor.mul_(2)
-            return MagicMock(wait=lambda: None)
+            fut = torch.futures.Future()
+            fut.set_result(tensor)
+            return fut
 
         manager.allreduce.side_effect = fake_allreduce
 
