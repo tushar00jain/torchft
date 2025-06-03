@@ -90,6 +90,7 @@ class TestManager(TestCase):
             state_dict,
             {
                 "step": 0,
+                "local_step": 0,
                 "batches_committed": 0,
             },
         )
@@ -97,10 +98,12 @@ class TestManager(TestCase):
         manager.load_state_dict(
             {
                 "step": 1234,
+                "local_step": 1234,
                 "batches_committed": 2345,
             }
         )
         self.assertEqual(manager.current_step(), 1234)
+        self.assertEqual(manager.local_step(), 1234)
         self.assertEqual(manager.batches_committed(), 2345)
 
     @patch("torchft.manager.ManagerClient", autospec=True)
@@ -113,6 +116,7 @@ class TestManager(TestCase):
                 "user": {},
                 "torchft": {
                     "step": 0,
+                    "local_step": 0,
                     "batches_committed": 0,
                 },
             },
@@ -129,6 +133,7 @@ class TestManager(TestCase):
                 "user": {"new_state": 1},
                 "torchft": {
                     "step": 0,
+                    "local_step": 0,
                     "batches_committed": 0,
                 },
             },
@@ -154,8 +159,10 @@ class TestManager(TestCase):
 
         self.assertEqual(manager._quorum_id, -1)
         self.assertEqual(manager.current_step(), 0)
+        self.assertEqual(manager.local_step(), 0)
         self.assertEqual(manager.batches_committed(), 0)
 
+        manager.increment_local_step()
         manager.start_quorum()
         manager.allreduce(torch.tensor([1.0])).wait()
         self.assertEqual(len(manager._pending_work), 1)
@@ -164,6 +171,7 @@ class TestManager(TestCase):
 
         self.assertEqual(manager._quorum_id, 123)
         self.assertEqual(manager.current_step(), 1)
+        self.assertEqual(manager.local_step(), 1)
         # pyre-ignore[16]: _pg is mocked
         self.assertEqual(manager._pg.allreduce.call_count, 1)
 
@@ -284,6 +292,7 @@ class TestManager(TestCase):
         quorum.heal = False
         manager.start_quorum()
         self.assertEqual(manager.current_step(), 20)
+        self.assertEqual(manager.local_step(), 0)
         self.assertEqual(manager.batches_committed(), 0)
 
     @patch("torchft.manager.ManagerClient", autospec=True)
@@ -325,6 +334,7 @@ class TestManager(TestCase):
         self.assertTrue(manager._healing)
 
         grad = torch.tensor([1.0])
+        manager.increment_local_step()
         manager.allreduce(grad).wait()
         torch.testing.assert_close(grad, torch.zeros_like(grad))
         # don't commit since num_max < min_replica_size
@@ -344,6 +354,7 @@ class TestManager(TestCase):
         quorum.heal = False
         manager.start_quorum()
         self.assertEqual(manager.current_step(), 21)
+        self.assertEqual(manager.local_step(), 1)
         self.assertEqual(manager.batches_committed(), 1)
 
     @patch("torchft.manager.ManagerClient", autospec=True)
@@ -474,9 +485,11 @@ class TestManager(TestCase):
 
             self.assertEqual(manager._quorum_id, -1)
             self.assertEqual(manager.current_step(), 0)
+            self.assertEqual(manager.local_step(), 0)
             self.assertEqual(manager.batches_committed(), 0)
 
             manager.start_quorum()
+            manager.increment_local_step()
             manager.allreduce(torch.tensor([1.0])).wait()
 
             self.assertEqual(manager.is_participating(), rank != 2)
@@ -485,6 +498,7 @@ class TestManager(TestCase):
             self.assertTrue(manager.should_commit())
             self.assertEqual(manager.batches_committed(), 2)
             self.assertEqual(manager.current_step(), 1)
+            self.assertEqual(manager.local_step(), 1)
 
     @patch("torchft.manager.ManagerClient", autospec=True)
     def test_quorum_no_healing(self, client_mock: MagicMock) -> None:
@@ -511,6 +525,7 @@ class TestManager(TestCase):
         self.assertEqual(manager.batches_committed(), 0)
 
         manager.start_quorum(allow_heal=False)
+        manager.increment_local_step()
         manager.allreduce(torch.tensor([1.0])).wait()
 
         self.assertFalse(manager.is_participating())
@@ -519,6 +534,7 @@ class TestManager(TestCase):
         self.assertTrue(manager.should_commit())
         self.assertEqual(manager.batches_committed(), 2)
         self.assertEqual(manager.current_step(), 1)
+        self.assertEqual(manager.local_step(), 1)
 
     @patch("torchft.manager.ManagerClient", autospec=True)
     def test_manager_report_error(self, client_mock: MagicMock) -> None:

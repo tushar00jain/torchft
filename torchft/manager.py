@@ -252,6 +252,7 @@ class Manager:
         )
 
         self._step = 0
+        self._local_step = 0
         self._quorum_id = -1
         self._errored: Optional[ExceptionWithTraceback] = None
         self._healing = False
@@ -732,6 +733,7 @@ class Manager:
         """
         self._step = state_dict["step"]
         self._batches_committed = state_dict["batches_committed"]
+        self._local_step = state_dict["local_step"]
 
     def _manager_state_dict(self) -> Dict[str, object]:
         assert self._user_state_dict is not None, "user state_dict is not initialized."
@@ -750,7 +752,11 @@ class Manager:
         Returns:
             the state dict for this manager
         """
-        return {"step": self._step, "batches_committed": self._batches_committed}
+        return {
+            "step": self._step,
+            "local_step": self._local_step,
+            "batches_committed": self._batches_committed,
+        }
 
     def current_step(self) -> int:
         """
@@ -762,6 +768,36 @@ class Manager:
             the current step count
         """
         return self._step
+
+    def set_local_step(self, step: int) -> None:
+        """
+        Set the local step to the desired value.
+
+        Args:
+            step: the desired local step count
+        """
+        self._local_step = step
+
+    def increment_local_step(self) -> None:
+        """
+        Increment the local step count.
+
+        Expected to be called after each optimizer .step()
+        """
+        self._local_step += 1
+
+    def local_step(self) -> int:
+        """
+        This number is expected to be incremented on
+        optimizer .step().
+
+        This is unlike `current_step` that only gets
+        incremented on `should_commit`
+
+        Returns:
+            the current local step count
+        """
+        return self._local_step
 
     def batches_committed(self) -> int:
         """

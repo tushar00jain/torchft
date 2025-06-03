@@ -139,7 +139,7 @@ def diloco_train_loop(
         if device.type == "cuda":
             pg = ProcessGroupBabyNCCL()
         else:
-            pg = ProcessGroupGloo()
+            pg = ProcessGroupGloo(timeout=timedelta(seconds=10))
         manager = Manager(
             pg=pg,
             min_replica_size=2,
