@@ -46,7 +46,7 @@ def allreduce_quantized(
     opts: AllreduceOptions | ReduceOp,
     process_group: "ProcessGroup",
     sync_stream: cuda.Stream | None = None,
-) -> Future[None]:
+) -> Future[list[torch.Tensor]]:
     """
     Performs a quantized all-reduce operation on a list of tensors.
 
@@ -75,6 +75,8 @@ def allreduce_quantized(
     Returns:
         A Future that can be used to wait for the operation to complete and
         clean up intermediate buffers.
+
+        The future's value is set to an empty list
 
     Raises:
         NotImplementedError: If the reduce operation is not ReduceOp.AVG.
@@ -137,7 +139,7 @@ def allreduce_quantized(
         # Dequantize and copy to output buffer.
         fused_dequantize_from_fp8(tensors, quantized_tensors, world_size)
 
-        class QuantizedAllReduceFuture(Future[None]):
+        class QuantizedAllReduceFuture(Future[list[torch.Tensor]]):
             def __init__(
                 self,
                 sync_stream: cuda.Stream,
@@ -149,12 +151,13 @@ def allreduce_quantized(
                 self._quantized_tensors = quantized_tensors
                 self._quantized_tensors_out = quantized_tensors_out
 
-            def wait(self) -> None:
+            def wait(self) -> list[torch.Tensor]:
                 # Wait for the synchronization to complete.
                 cuda.current_stream().wait_stream(self._sync_stream)
                 # Clean up intermediate buffers.
                 del self._quantized_tensors_out
                 del self._quantized_tensors
+                return []
 
         # pyre-ignore[29]
         return QuantizedAllReduceFuture(

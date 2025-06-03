@@ -147,15 +147,15 @@ class LocalSGD:
         """
         Averages the model parameters across the manager and returns the averaged parameters.
         """
-        works = []
         averaged_parameters = []
         for p in self._model.parameters():
             # Create a new tensor to store the averaged parameter
             avg_param = extract_local_tensor(p)
-            works.append(self._manager.allreduce(avg_param))
             averaged_parameters.append(avg_param)
-        for work in works:
-            work.wait()
+
+        work = self._manager.collect_all_allreduce(averaged_parameters)
+        work.wait()
+
         return averaged_parameters
 
 
@@ -320,18 +320,20 @@ class _StreamingDiLoCoFragment:
 
     def _allreduce_per_param(self) -> None:
         """Performs allreduce on each gradient tensor separately (original method)."""
+        tensors = []
+
         for p in self._model_fragment.parameters():
             # Perform allreduce on the pseudogradients
             assert p.grad is not None
             if isinstance(p, DTensor):
-                work = self._manager.allreduce(
-                    p.grad._local_tensor, should_quantize=self.should_quantize
-                )
+                tensors.append(p.grad._local_tensor)
             else:
-                work = self._manager.allreduce(
-                    p.grad, should_quantize=self.should_quantize
-                )
-            self._allreduce_futures.append(work)
+                tensors.append(p.grad)
+
+        work = self._manager.collect_all_allreduce(
+            tensors, should_quantize=self.should_quantize
+        )
+        self._allreduce_futures.append(work)
 
     def bucketize_and_allreduce(
         self,
@@ -350,6 +352,9 @@ class _StreamingDiLoCoFragment:
 
         total_size = sum(t.numel() for t in tensors)
         dtype, device = tensors[0].dtype, tensors[0].device
+
+        flat_buffers = []
+        all_bucket_tensors = []
 
         offset = 0
         flat_index = 0
@@ -372,19 +377,27 @@ class _StreamingDiLoCoFragment:
                 pack_offset += numel
                 flat_index += 1
 
-            work = self._manager.allreduce(
-                flat_buffer, should_quantize=self.should_quantize
-            )
+            flat_buffers.append(flat_buffer)
+            all_bucket_tensors.append(bucket_tensors)
 
-            def callback(fut: torch.futures.Future[torch.Tensor]) -> None:
-                nonlocal bucket_tensors, flat_buffer
+            offset += chunk_size
+
+        def callback(
+            fut: torch.futures.Future[List[torch.futures.Future[torch.Tensor]]],
+        ) -> None:
+            nonlocal all_bucket_tensors, flat_buffers
+
+            for i in range(len(flat_buffers)):
+                bucket_tensors = all_bucket_tensors[i]
+                flat_buffer = flat_buffers[i]
                 for t, pack_offset, numel in bucket_tensors:
                     t.copy_(flat_buffer[pack_offset : pack_offset + numel].view_as(t))
 
-            work = work.then(callback)
-            self._allreduce_futures.append(work)
-
-            offset += chunk_size
+        work = self._manager.collect_all_allreduce(
+            flat_buffers, should_quantize=self.should_quantize
+        )
+        work = work.then(callback)
+        self._allreduce_futures.append(work)
 
     def _allreduce_bucketized(self) -> None:
         """
@@ -454,16 +467,6 @@ class DiLoCo:
 
         if sync_every < len(model_fragments):
             raise ValueError("Only 1 fragment can be syncrhonized at a time")
-
-        # TODO: Support multiple fragments
-        # This requires changing the manager to support `should_commit` for each
-        # fragment separately.
-        if len(model_fragments) != 1:
-            raise ValueError("Multiple fragments are not supported yet")
-
-        # TODO: Support `fragment_sync_delay`
-        if fragment_sync_delay != 0:
-            raise ValueError("Fragment synchronization delay is not supported yet")
 
         # TODO: Support `fragment_update_alpha`
         if fragment_update_alpha != 0.0:

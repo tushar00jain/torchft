@@ -278,7 +278,32 @@ class Manager:
             self._manager.shutdown()
         self._executor.shutdown(wait=wait)
 
+    def collect_all_allreduce(
+        self, tensors: List[torch.Tensor], should_quantize: bool = False
+    ) -> torch.futures.Future[List[torch.futures.Future[torch.Tensor]]]:
+        futs: List[torch.futures.Future[torch.Tensor]] = []
+        default_futs: List[torch.futures.Future[torch.Tensor]] = []
+
+        for tensor in tensors:
+            fut = self.allreduce(tensor, should_quantize=should_quantize)
+            futs.append(fut)
+
+            default_fut: torch.futures.Future[torch.Tensor] = torch.futures.Future()  # pyre-fixme[29]: not a function
+            default_fut.set_result(tensor)
+            default_futs.append(default_fut)
+
+        fut = torch.futures.collect_all(futs)
+
+        return self.wrap_future(fut, default_futs)
+
     def allreduce(
+        self, tensor: torch.Tensor, should_quantize: bool = False
+    ) -> torch.futures.Future[torch.Tensor]:
+        fut = self._allreduce(tensor, should_quantize=should_quantize)
+        fut = self.wrap_future(fut, tensor)
+        return fut
+
+    def _allreduce(
         self, tensor: torch.Tensor, should_quantize: bool = False
     ) -> torch.futures.Future[torch.Tensor]:
         """
@@ -313,11 +338,7 @@ class Manager:
         try:
             # Run the allreduce async and save the work object so we can wait on
             # it later.
-            fut: Optional[
-                torch.futures.Future[None]
-                | torch.futures.Future[torch.Tensor]
-                | torch.futures.Future[List[torch.Tensor]]
-            ] = None
+            fut: Optional[torch.futures.Future[List[torch.Tensor]] | torch.futures.Future[torch.Tensor]] = None
             if should_quantize and IS_TRITON_AVAILABLE:
                 fut = allreduce_quantized([tensor], ReduceOp.AVG, self._pg)
             else:
@@ -331,19 +352,16 @@ class Manager:
             ) -> torch.Tensor:
                 nonlocal tensor
 
-                # check for exceptions
                 fut.value()
 
-                tensor /= self.num_participants()
+                if not should_quantize:
+                    tensor /= self.num_participants()
 
                 return tensor
 
             assert fut is not None
-            if not should_quantize:
-                fut = fut.then(callback)
-            fut = self.wrap_future(fut, tensor)
+            fut = fut.then(callback)
             return fut
-
         except Exception as e:
             self._logger.exception(
                 f"got exception in all reduce -- skipping remaining: {e}"
@@ -668,23 +686,23 @@ class Manager:
         Raises:
             RuntimeError: if should_commit fails max_retries times in a row and max_retries is set
         """
-        for work in self._pending_work:
-            # check at the beginning of since .wait() may trigger errors
-            if self._errored is not None:
+        while True:
+            if len(self._pending_work) == 0:
                 break
 
+            work = self._pending_work.pop(0)
             # We swallow the error at in a future then callback so this will
             # never return an error.
             work.wait()
 
+            # Remove all work if there was an error.
+            # We won't commit in this case as well.
+            if self._errored is None:
+                break
+
         # make sure recovery is complete before committing
         if self._recovery_stream is not None:
             self._recovery_stream.synchronize()
-
-        self._pending_work = []
-
-        if err := self._pg.errored():
-            self.report_error(err)
 
         # apply state_dict if healing
         if self._healing:

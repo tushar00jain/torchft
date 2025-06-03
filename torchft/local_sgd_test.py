@@ -4,7 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-from typing import Dict
+from typing import Dict, List
 from unittest import TestCase
 from unittest.mock import MagicMock, create_autospec
 
@@ -86,7 +86,7 @@ class LocalSGDTest(TestCase):
             manager.should_commit.return_value = True
             self.assertEqual(local_sgd._local_step, 0)
             self.assertEqual(manager.should_commit.call_count, 1)
-            self.assertEqual(manager.allreduce.call_count, 4)
+            self.assertEqual(manager.collect_all_allreduce.call_count, 1)
 
     def test_extract_local_tensor(self) -> None:
         regular_tensor = torch.rand(3, 3, requires_grad=True)
@@ -172,7 +172,7 @@ class DiLoCoTest(TestCase):
                 diloco._fragments[0].original_parameters, _params_dict(model)
             )
             self.assertEqual(manager.should_commit.call_count, 1)
-            self.assertEqual(manager.allreduce.call_count, parameter_count)
+            self.assertEqual(manager.collect_all_allreduce.call_count, 1)
 
             outer_opt_state = outer_optimizer.state_dict()
             self.assertEqual(len(outer_opt_state["state"]), parameter_count)
@@ -220,13 +220,12 @@ class DiLoCoTest(TestCase):
             loss.backward()
             inner_optimizer.step()
 
-            allreduce_calls = manager.allreduce.call_count
-            param_count = len([p for p in model.parameters() if p.requires_grad])
+            allreduce_calls = manager.collect_all_allreduce.call_count
 
             if expect_fewer_calls:
-                self.assertLess(int(allreduce_calls), int(param_count))
+                self.assertEqual(int(allreduce_calls), 1)
             else:
-                self.assertEqual(int(allreduce_calls), int(param_count))
+                self.assertEqual(int(allreduce_calls), 1)
 
     def test_bucketization_correctness(self) -> None:
         class TinyModel(nn.Module):
@@ -251,16 +250,20 @@ class DiLoCoTest(TestCase):
         manager._use_async_quorum = False
         manager.should_commit.return_value = True
 
-        # Define fake allreduce: multiplies buffer by 2
-        def fake_allreduce(
-            tensor: Tensor, should_quantize: bool
-        ) -> torch.futures.Future[Tensor]:
-            tensor.mul_(2)
+        # Define fake collect_all_allreduce: multiplies all buffers by 2
+        def fake_collect_all_allreduce(
+            tensors: List[Tensor], should_quantize: bool
+        ) -> torch.futures.Future[List[torch.futures.Future[Tensor]]]:
+            for tensor in tensors:
+                tensor.mul_(2)
             fut = torch.futures.Future()  # pyre-fixme[29]: not a function
-            fut.set_result(tensor)
-            return fut
+            fut.set_result(tensors)
 
-        manager.allreduce.side_effect = fake_allreduce
+            futs = torch.futures.Future()  # pyre-fixme[29]: not a function
+            futs.set_result([fut])
+            return futs
+
+        manager.collect_all_allreduce.side_effect = fake_collect_all_allreduce
 
         diloco = DiLoCo(
             manager, [model], inner_opt, outer_opt, sync_every=2, use_bucketization=True
