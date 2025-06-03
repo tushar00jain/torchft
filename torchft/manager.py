@@ -35,10 +35,11 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from datetime import timedelta
 from enum import Enum
-from typing import TYPE_CHECKING, Callable, Dict, List, Optional, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, TypeVar, cast
 
 import torch
 from torch.distributed import ReduceOp, TCPStore
+from torch.distributed.distributed_c10d import AllreduceOptions, ReduceOp
 
 from torchft._torchft import ManagerClient, ManagerServer
 from torchft.checkpointing import CheckpointTransport, HTTPTransport
@@ -46,6 +47,15 @@ from torchft.futures import future_timeout
 
 if TYPE_CHECKING:
     from torchft.process_group import ProcessGroup
+
+IS_TRITON_AVAILABLE = True
+try:
+    # pyre-ignore[21]: Could not find a module corresponding to import `triton`
+    import triton
+
+    from torchft.collectives import allreduce_quantized
+except ImportError:
+    IS_TRITON_AVAILABLE = False
 
 MANAGER_ADDR_KEY: str = "manager_addr"
 MANAGER_PORT_ENV: str = "TORCHFT_MANAGER_PORT"
@@ -267,7 +277,9 @@ class Manager:
             self._manager.shutdown()
         self._executor.shutdown(wait=wait)
 
-    def allreduce(self, tensor: torch.Tensor) -> torch.futures.Future[torch.Tensor]:
+    def allreduce(
+        self, tensor: torch.Tensor, should_quantize: bool = False
+    ) -> torch.futures.Future[torch.Tensor]:
         """
         Fault tolerant allreduce the tensor and return a Future that will be completed when
         the tensor is ready.
@@ -282,6 +294,7 @@ class Manager:
 
         Args:
             tensor: the tensor to allreduce
+            should_quantize: weather the tensor should be quantized before communication
         Returns:
             a Future that will be completed with the allreduced tensor
         """
@@ -299,8 +312,16 @@ class Manager:
         try:
             # Run the allreduce async and save the work object so we can wait on
             # it later.
-            work = self._pg.allreduce([tensor], ReduceOp.SUM)
-            fut = work.get_future()
+            fut: Optional[
+                torch.futures.Future[None]
+                | torch.futures.Future[torch.Tensor]
+                | torch.futures.Future[List[torch.Tensor]]
+            ] = None
+            if should_quantize and IS_TRITON_AVAILABLE:
+                fut = allreduce_quantized([tensor], ReduceOp.AVG, self._pg)
+            else:
+                work = self._pg.allreduce([tensor], ReduceOp.SUM)
+                fut = work.get_future()
 
             # schedule grad normalization as a continuation
             # on the Future
@@ -316,7 +337,9 @@ class Manager:
 
                 return tensor
 
-            fut = fut.then(callback)
+            assert fut is not None
+            if not should_quantize:
+                fut = fut.then(callback)
             fut = self.wrap_future(fut, tensor)
             return fut
 
