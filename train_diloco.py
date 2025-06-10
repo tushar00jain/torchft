@@ -196,6 +196,7 @@ def main() -> None:
         backup_device=device,
         sync_every=20 if USE_STREAMING else 20,
         fragment_sync_delay=10 if USE_STREAMING else 0,
+        should_quantize=True,
     ) as diloco:
         while True:
             for i, (inputs, labels) in enumerate(trainloader):
