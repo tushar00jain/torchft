@@ -286,6 +286,10 @@ class _StreamingDiLoCoFragment:
         Calculate the pseugradient, average them across the manager group and starts
         allreduce on the pseudo-gradients but doesn't wait for it to finish.
         """
+        # Make sure tensors are available to `_stream`
+        if self._stream is not None:
+            self._stream.wait_stream(torch.cuda.current_stream())
+
         with (
             torch.cuda.stream(self._stream)
             if self._stream is not None
