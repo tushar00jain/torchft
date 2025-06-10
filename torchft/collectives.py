@@ -135,7 +135,7 @@ def allocate_reduce_scatter_output(
     return tensor, padded_sizes
 
 
-class _QuantizedOpFuture(Future[None]):
+class _QuantizedOpFuture(Future[list[torch.Tensor]]):
     def __init__(
         self,
         sync_stream: cuda.Stream,
@@ -145,11 +145,11 @@ class _QuantizedOpFuture(Future[None]):
         self._sync_stream = sync_stream
         self._keep_alive_tensors = keep_alive_tensors
 
-    def wait(self) -> None:
+    def wait(self) -> list[torch.Tensor]:
         # Wait for the synchronization to complete.
         cuda.current_stream().wait_stream(self._sync_stream)
         # Clean up intermediate buffers.
-        del self._keep_alive_tensors
+        return self._keep_alive_tensors
 
 
 def reduce_scatter_quantized(
@@ -284,7 +284,7 @@ def allreduce_quantized(
     opts: AllreduceOptions | ReduceOp,
     process_group: "ProcessGroup",
     sync_stream: cuda.Stream | None = None,
-) -> Future[None]:
+) -> Future[list[torch.Tensor]]:
     """
     Performs a quantized all-reduce operation on a list of tensors.
 

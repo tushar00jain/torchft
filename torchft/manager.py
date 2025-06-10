@@ -332,9 +332,9 @@ class Manager:
             # Run the allreduce async and save the work object so we can wait on
             # it later.
             if should_quantize and IS_TRITON_AVAILABLE:
-                assert False, "allreduce_quantized is not supported yet"
-                # TODO: Support `allreduce_quantized`
-                # fut = allreduce_quantized([tensor], ReduceOp.SUM, self._pg)
+                fut = allreduce_quantized(
+                    [tensor], ReduceOp.SUM, self._pg, torch.cuda.current_stream()
+                )
             else:
                 work = self._pg.allreduce([tensor], ReduceOp.SUM)
                 fut = work.get_future()

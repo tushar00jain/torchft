@@ -378,9 +378,6 @@ class _StreamingDiLoCoFragment:
             chunk_size = min(
                 bucket_size_bytes // tensors[0].element_size(), total_size - offset
             )
-            flat_buffer: torch.Tensor = torch.zeros(
-                chunk_size, dtype=dtype, device=device
-            )
 
             pack_offset: int = 0
             bucket_tensors: list[Tuple[torch.Tensor, int, int]] = []
@@ -388,22 +385,11 @@ class _StreamingDiLoCoFragment:
                 numel = t.numel()
                 if pack_offset + numel > chunk_size:
                     break
-                flat_buffer[pack_offset : pack_offset + numel].copy_(t.view(-1))
                 bucket_tensors.append((t, pack_offset, numel))
+                work = self._manager.allreduce(t, should_quantize=self.should_quantize)
+                self._allreduce_futures.append(work)
                 pack_offset += numel
                 flat_index += 1
-
-            work = self._manager.allreduce(
-                flat_buffer, should_quantize=self.should_quantize
-            )
-
-            def callback(fut: torch.futures.Future[torch.Tensor]) -> None:
-                nonlocal bucket_tensors, flat_buffer
-                for t, pack_offset, numel in bucket_tensors:
-                    t.copy_(flat_buffer[pack_offset : pack_offset + numel].view_as(t))
-
-            work = work.then(callback)
-            self._allreduce_futures.append(work)
 
             offset += chunk_size
 
