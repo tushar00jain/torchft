@@ -362,12 +362,6 @@ class LocalSGDIntegTest(TestCase):
         if use_cuda and torch.cuda.device_count() < 2:
             self.skipTest("Not enough GPUs for CUDA test")
 
-        if platform == "darwin":
-            # TODO: This is likely because of Gloo not releasing GIL.
-            # Fix in: https://github.com/pytorch/pytorch/pull/154976
-            # Once this makes it to a stable package, we can re-enable this test.
-            self.skipTest("Known issue in Gloo")
-
         lighthouse = LighthouseServer(
             bind="[::]:0",
             min_replicas=2,
