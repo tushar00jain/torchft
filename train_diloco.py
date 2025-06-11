@@ -57,7 +57,7 @@ def main() -> None:
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     pg = (
-        ProcessGroupBabyNCCL(
+        ProcessGroupNCCL(
             timeout=timedelta(seconds=10),
         )
         if torch.cuda.is_available()
@@ -196,6 +196,7 @@ def main() -> None:
         backup_device=device,
         sync_every=20 if USE_STREAMING else 20,
         fragment_sync_delay=10 if USE_STREAMING else 0,
+        should_quantize=True,
     ) as diloco:
         while True:
             for i, (inputs, labels) in enumerate(trainloader):
@@ -216,7 +217,7 @@ def main() -> None:
                 if manager.current_step() % 100 == 0:
                     print(f"[{manager.current_step()}] loss = {loss.item()}")
 
-                if manager.current_step() >= 50:
+                if manager.current_step() >= 15:
                     # complete training
                     prof.stop()
                     exit()
