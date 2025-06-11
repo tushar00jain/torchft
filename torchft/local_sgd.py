@@ -209,7 +209,9 @@ class _StreamingDiLoCoFragment:
         self.use_bucketization = use_bucketization
         self.should_quantize = should_quantize
 
+        self._grads = {}
         self.original_parameters: Dict[str, torch.Tensor] = {}
+
         for name, p in self._model_fragment.named_parameters():
             if isinstance(p, DTensor):
                 p = extract_local_tensor(p.data)
@@ -249,18 +251,16 @@ class _StreamingDiLoCoFragment:
                         ),
                         non_blocking=False,
                     )
+                    # TODO: copy over grad
                 else:
                     p.data.copy_(self.original_parameters[name], non_blocking=False)
+                    p._grad.copy_(self._grads[name], non_blocking=False)
 
     @torch.profiler.record_function("torchft::local_sgd::wait")
     def wait(self) -> None:
         """
         Waits for the previously scheduled allreduce to finish
         """
-
-        for work in self._allreduce_futures:
-            work.wait()
-
         if self._stream is not None:
             self._stream.synchronize()
 
@@ -286,23 +286,31 @@ class _StreamingDiLoCoFragment:
         Calculate the pseugradient, average them across the manager group and starts
         allreduce on the pseudo-gradients but doesn't wait for it to finish.
         """
+        # Set the .grad field of each parameter to its pseudogradient
+        for name, p in self._model_fragment.named_parameters():
+            local_param = extract_local_tensor(p.data)
+            pseudogradient = local_param - self.original_parameters[name].to(
+                p.device
+            )
+            if isinstance(p, DTensor):
+                p.grad._local_tensor = pseudogradient
+                # TODO: use `self._grads`
+            else:
+                self._grads[name] = pseudogradient
+
+        # Make sure tensors are available to `_stream`
+        if self._stream is not None:
+            self._stream.wait_stream(torch.cuda.current_stream())
+
         with (
             torch.cuda.stream(self._stream)
             if self._stream is not None
             else nullcontext()
         ):
-            # Set the .grad field of each parameter to its pseudogradient
-            for name, p in self._model_fragment.named_parameters():
-                local_param = extract_local_tensor(p.data)
-                pseudogradient = local_param - self.original_parameters[name].to(
-                    p.device
-                )
-                if isinstance(p, DTensor):
-                    p.grad._local_tensor = pseudogradient
-                else:
-                    p.grad = pseudogradient
-
             self._average_grads()
+
+            for work in self._allreduce_futures:
+                work.wait()
 
     @torch.profiler.record_function("torchft::local_sgd::perform_sync")
     def perform_sync(self) -> bool:
@@ -341,7 +349,7 @@ class _StreamingDiLoCoFragment:
 
     def _allreduce_per_param(self) -> None:
         """Performs allreduce on each gradient tensor separately (original method)."""
-        for p in self._model_fragment.parameters():
+        for name, p in self._model_fragment.named_parameters():
             # Perform allreduce on the pseudogradients
             assert p.grad is not None
             if isinstance(p, DTensor):
@@ -350,7 +358,7 @@ class _StreamingDiLoCoFragment:
                 )
             else:
                 work = self._manager.allreduce(
-                    p.grad, should_quantize=self.should_quantize
+                    self._grads[name], should_quantize=self.should_quantize
                 )
             self._allreduce_futures.append(work)
 
@@ -609,7 +617,6 @@ class DiLoCo:
         #
         # Both of them will fail because Node A didn't send fragment 2
         # and Node B didn't send fragment 1.
-        step = 0
         with self._lock:
             self._local_step += 1
             step = self._local_step
