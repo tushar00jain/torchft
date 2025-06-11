@@ -371,7 +371,7 @@ class _StreamingDiLoCoFragment:
 
     def _allreduce_per_param(self) -> None:
         """Performs allreduce on each gradient tensor separately (original method)."""
-        for p in self._model_fragment.parameters():
+        for name, p in self._model_fragment.named_parameters():
             # Perform allreduce on the pseudogradients
             assert p.grad is not None
             if isinstance(p, DTensor):
@@ -380,7 +380,7 @@ class _StreamingDiLoCoFragment:
                 )
             else:
                 work = self._manager.allreduce(
-                    p.grad, should_quantize=self.should_quantize
+                    self._grads[name], should_quantize=self.should_quantize
                 )
             self._allreduce_futures.append(work)
 
