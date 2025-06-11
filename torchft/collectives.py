@@ -135,21 +135,23 @@ def allocate_reduce_scatter_output(
     return tensor, padded_sizes
 
 
-class _QuantizedOpFuture(Future[None]):
+class _QuantizedOpFuture(Future[list[torch.Tensor]]):
     def __init__(
         self,
         sync_stream: cuda.Stream,
         keep_alive_tensors: list[torch.Tensor],
+        return_tensors: list[torch.Tensor],
     ) -> None:
         super().__init__()
         self._sync_stream = sync_stream
         self._keep_alive_tensors = keep_alive_tensors
+        self._return_tensors = return_tensors
 
-    def wait(self) -> None:
+    def wait(self) -> list[torch.Tensor]:
         # Wait for the synchronization to complete.
         cuda.current_stream().wait_stream(self._sync_stream)
         # Clean up intermediate buffers.
-        del self._keep_alive_tensors
+        return self._return_tensors
 
 
 def reduce_scatter_quantized(
@@ -276,6 +278,7 @@ def reduce_scatter_quantized(
                 quantized_inputs,
                 quantized_inputs_out,
             ],
+            [output],
         )
 
 
@@ -284,7 +287,7 @@ def allreduce_quantized(
     opts: AllreduceOptions | ReduceOp,
     process_group: "ProcessGroup",
     sync_stream: cuda.Stream | None = None,
-) -> Future[None]:
+) -> Future[list[torch.Tensor]]:
     """
     Performs a quantized all-reduce operation on a list of tensors.
 
@@ -334,7 +337,7 @@ def allreduce_quantized(
         )
 
     rank = process_group.rank()
-    world_size = process_group.size()
+    world_size: int = process_group.size()
 
     if sync_stream is None:
         sync_stream = cuda.Stream()
@@ -346,7 +349,7 @@ def allreduce_quantized(
     with cuda.stream(sync_stream):
         # Quantize tensoers and compute their scales, all inlined in the
         # output tensor.
-        quantized_tensors = fused_quantize_into_fp8(tensors, world_size)
+        quantized_tensors: torch.Tensor = fused_quantize_into_fp8(tensors, world_size)
 
         # Allocate output tensor where all-reduce results will be stored
         quantized_tensors_out = torch.zeros_like(quantized_tensors)
@@ -370,20 +373,19 @@ def allreduce_quantized(
         )
 
         # Collect reduced chunks from other ranks.
-        process_group.allgather_into_tensor_coalesced(
+        work = process_group.allgather_into_tensor_coalesced(
             [quantized_tensors.view(world_size, -1)],
             [torch.split(quantized_tensors_out.view(world_size, -1), 1)[rank]],
             _to_allgather_options(allreduce_opts),
-        ).wait()
-
-        # Dequantize and copy to output buffer.
-        fused_dequantize_from_fp8(tensors, quantized_tensors, world_size)
-
-        # pyre-ignore[29]
-        return _QuantizedOpFuture(
-            sync_stream,
-            [
-                quantized_tensors,
-                quantized_tensors_out,
-            ],
         )
+        fut = work.get_future()
+
+        def callback(fut: Future[list[torch.Tensor]]) -> list[torch.Tensor]:
+            # Dequantize and copy to output buffer.
+            nonlocal tensors, quantized_tensors, world_size
+            # Dequantize the result back to the original precision
+            fused_dequantize_from_fp8(tensors, quantized_tensors, world_size)
+            return tensors
+
+        fut = fut.then(callback)
+        return fut
