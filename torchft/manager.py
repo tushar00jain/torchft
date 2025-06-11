@@ -332,9 +332,9 @@ class Manager:
             # Run the allreduce async and save the work object so we can wait on
             # it later.
             if should_quantize and IS_TRITON_AVAILABLE:
-                assert False, "allreduce_quantized is not supported yet"
-                # TODO: Support `allreduce_quantized`
-                # fut = allreduce_quantized([tensor], ReduceOp.SUM, self._pg)
+                fut = allreduce_quantized(
+                    [tensor], ReduceOp.SUM, self._pg, torch.cuda.current_stream()
+                )
             else:
                 work = self._pg.allreduce([tensor], ReduceOp.SUM)
                 fut = work.get_future()
@@ -345,23 +345,25 @@ class Manager:
 
             # schedule grad normalization as a continuation
             # on the Future
+            @torch.profiler.record_function("torchft::manager::allreduce::callback")
             def callback(
                 fut: torch.futures.Future[List[torch.Tensor]],
             ) -> torch.Tensor:
                 nonlocal tensor, stream
 
-                # check for exceptions
-                fut.value()
+                # change the stream to avoid making the callback stream
+                # dependent on process group stream running the allreduce
+                with torch.cuda.stream(stream) if stream is not None else nullcontext():
+                    tensor /= self.num_participants()
 
-                tensor /= self.num_participants()
-
-                if stream is not None:
-                    stream.wait_stream(torch.cuda.current_stream())
-
-                return tensor
+                    return tensor
 
             fut = fut.then(callback)
-            fut = self.wrap_future(fut, tensor)
+
+            # TODO: support `wrap_future` so that it also doesn't
+            # make the callback stream dependent on the process group's
+            # stream running allreduce
+            # fut = self.wrap_future(fut, tensor)
             return fut
 
         except Exception as e:
@@ -488,6 +490,7 @@ class Manager:
                 # and don't need to zero_grad
                 self._healing = False
 
+    @torch.profiler.record_function("torchft::manager::wait_quorum")
     def wait_quorum(self) -> None:
         """
         Wait for the quorum to complete.
@@ -696,11 +699,17 @@ class Manager:
             RuntimeError: if should_commit fails max_retries times in a row and max_retries is set
         """
         # make sure recovery is complete before committing
-        if self._recovery_stream is not None:
-            self._recovery_stream.synchronize()
+        with torch.profiler.record_function(
+            "torchft::manager::should_commmit::recovery_stream::synchronize"
+        ):
+            if self._recovery_stream is not None:
+                self._recovery_stream.synchronize()
 
-        if torch.cuda.is_available():
-            torch.cuda.current_stream().synchronize()
+        with torch.profiler.record_function(
+            "torchft::manager::should_commit::current_stream::synchronize"
+        ):
+            if torch.cuda.is_available():
+                torch.cuda.current_stream().synchronize()
 
         if err := self._pg.errored():
             self.report_error(err)
