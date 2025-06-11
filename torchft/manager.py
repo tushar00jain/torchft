@@ -332,11 +332,12 @@ class Manager:
             # Run the allreduce async and save the work object so we can wait on
             # it later.
             if should_quantize and IS_TRITON_AVAILABLE:
-                assert False, "allreduce_quantized is not supported yet"
-                # TODO: Support `allreduce_quantized`
-                # fut = allreduce_quantized([tensor], ReduceOp.SUM, self._pg)
+                fut = allreduce_quantized(
+                    [tensor], ReduceOp.SUM, self._pg, torch.cuda.current_stream()
+                )
             else:
                 work = self._pg.allreduce([tensor], ReduceOp.SUM)
+                work.wait()
                 fut = work.get_future()
 
             stream: Optional[torch.cuda.Stream] = (
@@ -345,6 +346,7 @@ class Manager:
 
             # schedule grad normalization as a continuation
             # on the Future
+            @torch.profiler.record_function("torchft::manager::allreduce::callback")
             def callback(
                 fut: torch.futures.Future[List[torch.Tensor]],
             ) -> torch.Tensor:
@@ -356,7 +358,8 @@ class Manager:
                 tensor /= self.num_participants()
 
                 if stream is not None:
-                    stream.wait_stream(torch.cuda.current_stream())
+                    event = torch.cuda.current_stream().record_event()
+                    event.wait(stream)
 
                 return tensor
 
@@ -488,6 +491,7 @@ class Manager:
                 # and don't need to zero_grad
                 self._healing = False
 
+    @torch.profiler.record_function("torchft::manager::wait_quorum")
     def wait_quorum(self) -> None:
         """
         Wait for the quorum to complete.
