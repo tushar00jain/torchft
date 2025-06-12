@@ -57,7 +57,7 @@ def main() -> None:
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     pg = (
-        ProcessGroupNCCL(
+        ProcessGroupBabyNCCL(
             timeout=timedelta(seconds=10),
         )
         if torch.cuda.is_available()
