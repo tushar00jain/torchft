@@ -3,7 +3,7 @@ import queue
 import sys
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import timedelta
 from typing import Callable, Generator, Optional, TypeVar
 from unittest.mock import Mock
@@ -162,17 +162,22 @@ class _TimeoutManager:
             handle,
         )
 
+        stream: Optional[torch.cuda.Stream] = (
+            torch.cuda.current_stream() if torch.cuda.is_available() else None
+        )
+
         def callback(fut: Future[T]) -> None:
-            handle.cancel()
-            try:
-                timed_fut.set_result(fut.wait())
-            except Exception as e:
+            with torch.cuda.stream(stream) if stream is not None else nullcontext():
+                handle.cancel()
                 try:
-                    # this can throw if the future is already done
-                    # pyre-fixme[6]: e is not T
-                    timed_fut.set_exception(e)
-                except Exception:
-                    pass
+                    timed_fut.set_result(fut.wait())
+                except Exception as e:
+                    try:
+                        # this can throw if the future is already done
+                        # pyre-fixme[6]: e is not T
+                        timed_fut.set_exception(e)
+                    except Exception:
+                        pass
 
         fut.add_done_callback(callback)
         return timed_fut
