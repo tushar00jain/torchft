@@ -23,6 +23,7 @@ from torch import nn, optim
 from torch.distributed.elastic.multiprocessing.errors import record
 from torch.distributed.pipelining import SplitPoint, pipeline
 from torch.export import export
+from torch.utils.tensorboard import SummaryWriter
 from torchdata.stateful_dataloader import StatefulDataLoader
 
 from torchft import (
@@ -41,7 +42,11 @@ logging.basicConfig(level=logging.INFO)
 @record
 def main() -> None:
     REPLICA_GROUP_ID = int(os.environ.get("REPLICA_GROUP_ID", 0))
-    NUM_REPLICA_GROUPS = int(os.environ.get("NUM_REPLICA_GROUPS", 2))
+    RUN = int(os.environ.get("RUN", 0))
+
+    output_folder = f"output/replica-{REPLICA_GROUP_ID}"
+
+    writer = SummaryWriter(f"{output_folder}/tensorboard", max_queue=1000)
 
     def load_state_dict(state_dict):
         m.load_state_dict(state_dict["model"])
@@ -174,9 +179,7 @@ def main() -> None:
     sort_by_keyword = "self_" + device + "_time_total"
 
     def trace_handler(p):
-        p.export_chrome_trace(
-            f"/home/tushar00jain/trace_{p.step_num}_{REPLICA_GROUP_ID}.json"
-        )
+        p.export_chrome_trace(f"{output_folder}/profiles/step-{p.step_num}.json")
 
     # You can use an epoch based training but with faults it's easier to use step
     # based training.
@@ -188,6 +191,7 @@ def main() -> None:
     )
 
     prof.start()
+    tensorboard_key_prefix = f"Run:{RUN}"
     with DiLoCo(
         manager,
         module_partitions if USE_STREAMING else [m],
@@ -210,16 +214,27 @@ def main() -> None:
                 out = m(inputs)
                 loss = criterion(out, labels)
 
+                writer.add_scalar(f"{tensorboard_key_prefix}/loss", loss, i)
+
                 loss.backward()
 
                 inner_optimizer.step()
 
+                writer.add_scalar(
+                    f"{tensorboard_key_prefix}/num_participants",
+                    manager.num_participants(),
+                    i,
+                )
+                writer.add_scalar(
+                    f"{tensorboard_key_prefix}/current_step", manager.current_step(), i
+                )
                 if manager.current_step() % 100 == 0:
                     print(f"[{manager.current_step()}] loss = {loss.item()}")
 
                 if manager.current_step() >= 15:
                     # complete training
                     prof.stop()
+                    writer.flush()
                     exit()
 
 
