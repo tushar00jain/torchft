@@ -243,6 +243,14 @@ class _StreamingDiLoCoFragment:
                 param_to_local = extract_local_tensor(p.data)
                 self.original_parameters[name].copy_(param_to_local, non_blocking=True)
 
+    def _save_local_parameters(self) -> None:
+        """
+        Saves a copy of the model's parameters.
+        """
+        with torch.no_grad():
+            for name, p in self._model_fragment.named_parameters():
+                self._local_parameters[name] = extract_local_tensor(p.data)
+
     @torch.profiler.record_function("torchft::local_sgd::restore_parameters")
     def restore_parameters(self) -> None:
         with torch.no_grad():
@@ -264,17 +272,45 @@ class _StreamingDiLoCoFragment:
                     p.data = torch.empty_like(self.original_parameters[name])
                     p.data.copy_(self.original_parameters[name], non_blocking=False)
 
+    def _save_grads(self) -> None:
+        with torch.no_grad():
+            for name, p in self._model_fragment.named_parameters():
+                local_param = extract_local_tensor(p.data)
+                pseudogradient = local_param - self.original_parameters[name].to(p.device)
+                self._grads[name] = pseudogradient
+
     def _set_grads(self) -> None:
         """
         Sets the gradients of the model fragment from the allreduce result
         """
-        for name, p in self._model_fragment.named_parameters():
-            if isinstance(p, DTensor):
-                p.grad._local_tensor = self._grads[name]
-            else:
-                p.grad = self._grads[name]
+        with torch.no_grad():
+            for name, p in self._model_fragment.named_parameters():
+                # avoid copying the gradient, it should be on the same device
+                if isinstance(p, DTensor):
+                    p.grad = DTensor.from_local(
+                        self._grads[name],
+                        p.device_mesh,
+                        p.placements,
+                        shape=p.shape,
+                        stride=p.stride(),
+                    )
+                else:
+                    p.grad = self._grads[name]
 
-            del self._grads[name]
+    def _clear_local_parameters(self) -> None:
+        """
+        Clears the saved copy of the model's parameters
+        """
+        self._local_parameters = {}
+
+    def _merge_parameters(self) -> None:
+        """
+        Merges the local and global parameters.
+        """
+        for name, p in self._model_fragment.named_parameters():
+            torch.lerp(
+                p.data, self._local_parameters[name], 1 - self._fragment_update_alpha
+            )
 
     def _merge_parameters(self) -> None:
         """
@@ -323,14 +359,9 @@ class _StreamingDiLoCoFragment:
         Calculate the pseugradient, average them across the manager group and starts
         allreduce on the pseudo-gradients but doesn't wait for it to finish.
         """
-        # Set the .grad field of each parameter to its pseudogradient
-        for name, p in self._model_fragment.named_parameters():
-            local_param = extract_local_tensor(p.data)
-            pseudogradient = local_param - self.original_parameters[name].to(p.device)
-            if isinstance(p, DTensor):
-                self._grads[name] = pseudogradient
-            else:
-                self._grads[name] = pseudogradient
+        self._save_grads()
+
+        assert len(self._allreduce_futures) == 0
 
         assert len(self._allreduce_futures) == 0
 
@@ -363,6 +394,8 @@ class _StreamingDiLoCoFragment:
 
         self.wait()
 
+        # save the parameters so they can be used for merging
+        self._save_local_parameters()
         # Restore the parameters back to the previous state
         self.restore_parameters()
 
@@ -375,6 +408,9 @@ class _StreamingDiLoCoFragment:
             self.save_parameters()
             self._merge_parameters()
         self._outer_optimizer.zero_grad()
+
+        # free up memory
+        self._clear_local_parameters()
 
         return should_commit
 
@@ -393,18 +429,12 @@ class _StreamingDiLoCoFragment:
         """Performs allreduce on each gradient tensor separately (original method)."""
         for name, p in self._model_fragment.named_parameters():
             # Perform allreduce on the pseudogradients
-            assert p.grad is not None
-            if isinstance(p, DTensor):
-                work = self._manager.allreduce(
-                    self._grads[name], should_quantize=self.should_quantize
-                )
-            else:
-                work = self._manager.allreduce(
-                    self._grads[name], should_quantize=self.should_quantize
-                )
+            work = self._manager.allreduce(
+                self._grads[name], should_quantize=self.should_quantize
+            )
             self._allreduce_futures.append(work)
 
-    def bucketize_and_allreduce(
+    def _bucketize_and_allreduce(
         self,
         tensors: List[torch.Tensor],
         bucket_size_bytes: int,
@@ -461,10 +491,9 @@ class _StreamingDiLoCoFragment:
         """
         Averages gradients using bucketized allreduce with a fixed buffer.
         """
-        grads = [
-            p.grad for p in self._model_fragment.parameters() if p.grad is not None
-        ]
-        self.bucketize_and_allreduce(
+        grads = list(self._grads.values())
+        assert len(grads) > 0, "No gradients to allreduce"
+        self._bucketize_and_allreduce(
             grads,
             bucket_size_bytes=self.bucket_cap_mb,
         )
