@@ -255,6 +255,8 @@ class DiLoCoTest(TestCase):
         diloco._fragments[0].bucket_cap_mb = 10 * 1024 * 1024
 
         # Run only bucketized logic
+        for name, param in model.named_parameters():
+            diloco._fragments[0]._grads[name] = param.grad
         diloco._fragments[0]._average_grads()
 
         # Expect grads to have been doubled
