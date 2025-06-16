@@ -52,6 +52,16 @@ def _copy_state_dict(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Ten
     return {name: value.clone().detach() for name, value in state_dict.items()}
 
 
+class TinyModel(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.w1 = nn.Parameter(torch.tensor([1.0, 2.0]))
+        self.w2 = nn.Parameter(torch.tensor([3.0, 4.0, 5.0]))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x @ self.w1.unsqueeze(0).T + self.w2.sum()
+
+
 class LocalSGDTest(TestCase):
     def test_local_sgd_healthy(self) -> None:
         model = SimpleModel()
@@ -216,23 +226,9 @@ class DiLoCoTest(TestCase):
                 self.assertEqual(int(allreduce_calls), int(param_count))
 
     def test_bucketization_correctness(self) -> None:
-        class TinyModel(nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.w1 = nn.Parameter(torch.tensor([1.0, 2.0]))
-                self.w2 = nn.Parameter(torch.tensor([3.0, 4.0, 5.0]))
-
-            def forward(self, x):
-                return x @ self.w1.unsqueeze(0).T + self.w2.sum()
-
         model = TinyModel()
         inner_opt = torch.optim.SGD(model.parameters(), lr=0.1)
         outer_opt = torch.optim.SGD(model.parameters(), lr=0.1)
-
-        # Manually assign fake gradients
-        grads = [torch.tensor([1.0, 2.0]), torch.tensor([3.0, 4.0, 5.0])]
-        for p, g in zip(model.parameters(), grads):
-            p.grad = g.clone()
 
         manager = create_autospec(Manager)
         manager._use_async_quorum = False
@@ -254,10 +250,71 @@ class DiLoCoTest(TestCase):
         )
         diloco._fragments[0].bucket_cap_mb = 10 * 1024 * 1024
 
+        # Manually assign fake gradients
+        grads = [torch.tensor([1.0, 2.0]), torch.tensor([3.0, 4.0, 5.0])]
+        for g, (name, param) in zip(grads, model.named_parameters()):
+            diloco._fragments[0]._grads[name] = g.clone()
+
         # Run only bucketized logic
         diloco._fragments[0]._average_grads()
+
+        # The parameter gradients should not be set
+        for param in model.parameters():
+            self.assertEqual(param.grad, None)
+
+        diloco._fragments[0]._set_grads()
 
         # Expect grads to have been doubled
         expected_grads = [g * 2 for g in grads]
         for param, expected in zip(model.parameters(), expected_grads):
             torch.testing.assert_close(param.grad, expected, rtol=1e-5, atol=1e-8)
+
+    def test_gradient_correctness(self) -> None:
+        model = TinyModel()
+        inner_opt = torch.optim.SGD(model.parameters(), lr=0.1)
+        outer_opt = torch.optim.SGD(model.parameters(), lr=0.1)
+
+        manager = create_autospec(Manager)
+        manager._use_async_quorum = False
+        manager.should_commit.return_value = True
+
+        # Define fake allreduce: multiplies buffer by 2
+        def fake_allreduce(
+            tensor: Tensor, should_quantize: bool
+        ) -> torch.futures.Future[Tensor]:
+            tensor.mul_(2)
+            fut = torch.futures.Future()  # pyre-fixme[29]: not a function
+            fut.set_result(tensor)
+            return fut
+
+        manager.allreduce.side_effect = fake_allreduce
+
+        diloco = DiLoCo(manager, [model], inner_opt, outer_opt, sync_every=2)
+
+        # save original parameters
+        diloco._fragments[0].save_parameters()
+
+        # change the model's parameters
+        for p in model.parameters():
+            p.data.add_(2)
+
+        # calculate and set the gradients
+        diloco._fragments[0]._save_grads()
+
+        # calculate
+        diloco._fragments[0]._average_grads()
+
+        # The parameter gradients should not be set
+        for param in model.parameters():
+            self.assertEqual(param.grad, None)
+
+        diloco._fragments[0]._set_grads()
+
+        # we added 2 to the parameters, then multiplied the gradients by 2
+        # so we should expect the model's gradient to be 4
+        expected_grad = 4
+        for param in model.parameters():
+            assert param.grad is not None
+            t = torch.empty_like(param.grad)
+            t.fill_(expected_grad)
+            torch.testing.assert_close(param.grad, t)
