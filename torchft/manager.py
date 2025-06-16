@@ -219,6 +219,9 @@ class Manager:
             torch.cuda.Stream() if torch.cuda.is_available() else None
         )
 
+        # Used to synchronize recovery operation
+        self._recovery_event: Optional[torch.cuda.Event] = None
+
         if self._group_rank == 0:
             if port is None:
                 port = int(os.environ.get(MANAGER_PORT_ENV, 0))
@@ -323,6 +326,7 @@ class Manager:
             return fut
 
         self.wait_quorum()
+        num_participants: int = self.num_participants()
 
         if not self.is_participating():
             tensor.zero_()
@@ -337,6 +341,7 @@ class Manager:
                 )
             else:
                 work = self._pg.allreduce([tensor], ReduceOp.SUM)
+                work.wait()
                 fut = work.get_future()
 
             stream: Optional[torch.cuda.Stream] = (
@@ -349,13 +354,13 @@ class Manager:
             def callback(
                 fut: torch.futures.Future[List[torch.Tensor]],
             ) -> torch.Tensor:
-                nonlocal tensor, stream
+                nonlocal tensor, stream, num_participants
 
                 # change the stream to avoid making the callback stream
                 # dependent on process group stream running the allreduce
                 with torch.cuda.stream(stream) if stream is not None else nullcontext():
                     fut.value()
-                    tensor /= self.num_participants()
+                    tensor /= num_participants
 
                     return tensor
 
@@ -644,7 +649,12 @@ class Manager:
                 except Exception as e:
                     self._logger.exception(f"got exception in recovery: {e}")
                     self.report_error(e)
-                    return
+
+                self._recovery_event = (
+                    torch.cuda.current_stream().record_event()
+                    if recovery_stream is not None
+                    else None
+                )
 
     def _apply_pending_state_dict(self) -> None:
         assert self._healing, "must be in healing state"
@@ -704,8 +714,9 @@ class Manager:
         with torch.profiler.record_function(
             "torchft::manager::should_commmit::recovery_stream::synchronize"
         ):
-            if self._recovery_stream is not None:
-                self._recovery_stream.synchronize()
+            if self._recovery_event is not None:
+                self._recovery_event.synchronize()
+                self._recovery_event = None
 
         with torch.profiler.record_function(
             "torchft::manager::should_commit::current_stream::synchronize"
