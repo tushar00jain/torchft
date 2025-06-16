@@ -257,17 +257,38 @@ class _StreamingDiLoCoFragment:
                 else:
                     p.data.copy_(self.original_parameters[name], non_blocking=False)
 
+    def _save_grads(self) -> None:
+        """
+        Saves pseudo-gradients of the parameters
+        """
+        with torch.no_grad():
+            for name, p in self._model_fragment.named_parameters():
+                if isinstance(p, DTensor):
+                    local_param = p.to_local()
+                else:
+                    local_param = p
+                pseudogradient = local_param - self.original_parameters[name].to(
+                    p.device
+                )
+                self._grads[name] = pseudogradient
+
     def _set_grads(self) -> None:
         """
         Sets the gradients of the model fragment from the allreduce result
         """
-        for name, p in self._model_fragment.named_parameters():
-            if isinstance(p, DTensor):
-                p.grad._local_tensor = self._grads[name]
-            else:
-                p.grad = self._grads[name]
-
-            del self._grads[name]
+        with torch.no_grad():
+            for name, p in self._model_fragment.named_parameters():
+                # avoid copying the gradient, it should be on the same device
+                if isinstance(p, DTensor):
+                    p.grad = DTensor.from_local(
+                        self._grads[name],
+                        p.device_mesh,
+                        p.placements,
+                        shape=p.shape,
+                        stride=p.stride(),
+                    )
+                else:
+                    p.grad = self._grads[name]
 
     @torch.profiler.record_function("torchft::local_sgd::wait")
     def wait(self) -> None:
@@ -304,14 +325,9 @@ class _StreamingDiLoCoFragment:
         Calculate the pseugradient, average them across the manager group and starts
         allreduce on the pseudo-gradients but doesn't wait for it to finish.
         """
-        # Set the .grad field of each parameter to its pseudogradient
-        for name, p in self._model_fragment.named_parameters():
-            local_param = extract_local_tensor(p.data)
-            pseudogradient = local_param - self.original_parameters[name].to(p.device)
-            if isinstance(p, DTensor):
-                self._grads[name] = pseudogradient
-            else:
-                self._grads[name] = pseudogradient
+        self._save_grads()
+
+        assert len(self._allreduce_futures) == 0
 
         # Make sure tensors are available to `_stream`
         if self._stream is not None:
@@ -371,18 +387,12 @@ class _StreamingDiLoCoFragment:
         """Performs allreduce on each gradient tensor separately (original method)."""
         for name, p in self._model_fragment.named_parameters():
             # Perform allreduce on the pseudogradients
-            assert p.grad is not None
-            if isinstance(p, DTensor):
-                work = self._manager.allreduce(
-                    self._grads[name], should_quantize=self.should_quantize
-                )
-            else:
-                work = self._manager.allreduce(
-                    self._grads[name], should_quantize=self.should_quantize
-                )
+            work = self._manager.allreduce(
+                self._grads[name], should_quantize=self.should_quantize
+            )
             self._allreduce_futures.append(work)
 
-    def bucketize_and_allreduce(
+    def _bucketize_and_allreduce(
         self,
         tensors: List[torch.Tensor],
         bucket_size_bytes: int,
@@ -439,10 +449,9 @@ class _StreamingDiLoCoFragment:
         """
         Averages gradients using bucketized allreduce with a fixed buffer.
         """
-        grads = [
-            p.grad for p in self._model_fragment.parameters() if p.grad is not None
-        ]
-        self.bucketize_and_allreduce(
+        grads = list(self._grads.values())
+        assert len(grads) > 0, "No gradients to allreduce"
+        self._bucketize_and_allreduce(
             grads,
             bucket_size_bytes=self.bucket_cap_mb,
         )
