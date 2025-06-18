@@ -213,7 +213,13 @@ class _StreamingDiLoCoFragment:
         self.should_quantize = should_quantize
 
         self._grads: Dict[str, torch.Tensor] = {}
+
+        # Used to save global parameters so that they can be restored in case
+        # commit fails
         self.original_parameters: Dict[str, torch.Tensor] = {}
+
+        # Used to mix the local and global parameters
+        self._local_parameters: Dict[str, torch.Tensor] = {}
 
         for name, p in self._model_fragment.named_parameters():
             if isinstance(p, DTensor):
@@ -236,6 +242,14 @@ class _StreamingDiLoCoFragment:
             for name, p in self._model_fragment.named_parameters():
                 param_to_local = extract_local_tensor(p.data)
                 self.original_parameters[name].copy_(param_to_local, non_blocking=True)
+
+    def _save_local_parameters(self) -> None:
+        """
+        Saves a copy of the model's parameters.
+        """
+        with torch.no_grad():
+            for name, p in self._model_fragment.named_parameters():
+                self._local_parameters[name] = extract_local_tensor(p.data)
 
     @torch.profiler.record_function("torchft::local_sgd::restore_parameters")
     def restore_parameters(self) -> None:
@@ -292,6 +306,21 @@ class _StreamingDiLoCoFragment:
 
                 # No longer needed
                 del self._grads[name]
+
+    def _clear_local_parameters(self) -> None:
+        """
+        Clears the saved copy of the model's parameters
+        """
+        self._local_parameters = {}
+
+    def _merge_parameters(self) -> None:
+        """
+        Merges the local and global parameters.
+        """
+        for name, p in self._model_fragment.named_parameters():
+            torch.lerp(
+                p.data, self._local_parameters[name], 1 - self._fragment_update_alpha
+            )
 
     @torch.profiler.record_function("torchft::local_sgd::wait")
     def wait(self) -> None:
@@ -380,6 +409,8 @@ class _StreamingDiLoCoFragment:
 
         self.wait()
 
+        # save the parameters so they can be used for merging
+        self._save_local_parameters()
         # Restore the parameters back to the previous state
         self.restore_parameters()
 
@@ -404,7 +435,11 @@ class _StreamingDiLoCoFragment:
             self._set_grads()
             self._outer_optimizer.step()
             self.save_parameters()
+            self._merge_parameters()
         self._outer_optimizer.zero_grad()
+
+        # free up memory
+        self._clear_local_parameters()
 
         return should_commit
 
@@ -557,12 +592,6 @@ class DiLoCo:
         if fragment_update_alpha < 0 or fragment_update_alpha > 1:
             raise ValueError("fragment_update_alpha must be between 0 and 1")
 
-        # TODO: Support `fragment_update_alpha`
-        if fragment_update_alpha != 0.0:
-            raise ValueError(
-                "Merging local parameters with global parameters is not supported yet"
-            )
-
         super().__init__()
         self._manager = manager
 
@@ -592,7 +621,7 @@ class DiLoCo:
             _StreamingDiLoCoFragment(
                 manager,
                 model_fragment,
-                math.floor((sync_every / len(model_fragments)) * (i + 1)),
+                (sync_every // len(model_fragments) * (i + 1)),
                 inner_optimizer,
                 # TODO: Support different outer optimizers for each fragment
                 outer_optimizer,
@@ -607,6 +636,13 @@ class DiLoCo:
             )
             for i, model_fragment in enumerate(model_fragments)
         ]
+
+        # This is to make sure we adhere to the assumptions made by the
+        # `_StreamingDiLoCoFragment` about the fragment sync schedule.
+        assert fragment_sync_delay < sync_every // len(model_fragments)
+
+        # Used to ensure that we try to sync a fragment after we've sent a prepare for it
+        self._first_prepare_sent: set[int] = set()
 
         # Need to copy the parameters to the host to be safe if we are on the first step.
         self._save_parameters()
@@ -651,6 +687,8 @@ class DiLoCo:
         for fragment in self._fragments:
             fragment.wait()
 
+        self._first_prepare_sent.clear()
+
     def _quorum_loop(self) -> None:
         """
         Performs infinite retries until quorum is successfull
@@ -691,15 +729,19 @@ class DiLoCo:
             if not fragment.should_prepare_fragment(step):
                 continue
 
-            logger.debug(f"preparing fragment {i} at step {step}")
+            logger.info(f"preparing fragment {i} at step {step}")
 
+            self._first_prepare_sent.add(i)
             fragment.prepare_sync()
 
         for i, fragment in enumerate(self._fragments):
             if not fragment.should_sync_fragment(step):
                 continue
 
-            logger.debug(f"syncing fragment {i} at step {step}")
+            if i not in self._first_prepare_sent:
+                continue
+
+            logger.info(f"syncing fragment {i} at step {step}")
 
             if not fragment.perform_sync():
                 # Cancel all the previously scheduled allreduce by simply
