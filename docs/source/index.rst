@@ -13,6 +13,13 @@ the entire training job.
     :maxdepth: 1
     :caption: Reference
 
+    protocol
+    assumptions_and_recommendations
+
+.. toctree::
+    :maxdepth: 1
+    :caption: API Reference
+
     process_group
     manager
     optim
