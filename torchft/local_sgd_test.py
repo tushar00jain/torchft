@@ -157,6 +157,11 @@ class DiLoCoTest(TestCase):
             loss.backward()
             inner_optimizer.step()
 
+            self.assertEqual(diloco._local_step, 0)
+            loss = model(inp).mean()
+            loss.backward()
+            inner_optimizer.step()
+
             self.assertEqual(diloco._local_step, 1)
             self.assertEqual(manager.start_quorum.call_count, 1)
             loss = model(inp).mean()
@@ -209,6 +214,10 @@ class DiLoCoTest(TestCase):
             use_bucketization=use_bucketization,
         ) as diloco:
             inp = torch.rand(2, 3)
+            loss = model(inp).mean()
+            loss.backward()
+            inner_optimizer.step()
+
             loss = model(inp).mean()
             loss.backward()
             inner_optimizer.step()
