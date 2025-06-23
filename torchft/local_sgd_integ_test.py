@@ -3,9 +3,11 @@ import logging
 import os
 import re
 import sys
+import threading
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import ExitStack
+from dataclasses import field
 from datetime import timedelta
 from typing import Any, Dict
 from unittest import TestCase, skipIf
@@ -13,13 +15,14 @@ from unittest import TestCase, skipIf
 import torch
 from parameterized import parameterized
 from torch import nn, optim
+from torch.distributed.pipelining import SplitPoint, pipeline
 from torch.distributed.tensor import DTensor, Replicate
 
 from torchft._torchft import LighthouseServer
 from torchft.device_mesh import ft_init_device_mesh
 from torchft.local_sgd import DiLoCo, LocalSGD
 from torchft.manager import Manager
-from torchft.manager_integ_test import FailureInjector, MyModel, Runner
+from torchft.manager_integ_test import BarrierInjector, FailureInjector, MyModel, Runner
 from torchft.process_group import ProcessGroupBabyNCCL, ProcessGroupGloo
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -254,6 +257,10 @@ def diloco_train_loop(
                     all_state_dicts[manager_curr_step] = copy.deepcopy(
                         manager._manager_state_dict()
                     )
+
+                if runner.barrier_injector is not None:
+                    runner.barrier_injector.check(manager_curr_step)
+
                 batch_size = 1
                 inputs = m.get_rand_inputs(batch_size, device=device)
                 labels = m.get_rand_labels(batch_size, device=device)
@@ -274,6 +281,26 @@ def diloco_train_loop(
         # return state_dict so we can check consistency
         return all_state_dicts
     return {}
+
+
+def assert_equal_global_state(
+    rep0: dict[str, dict[str, dict[str, dict[str, object]]]],
+    rep1: dict[str, dict[str, dict[str, dict[str, object]]]],
+) -> None:
+    """
+    Asserts that the global state of the two replicas are equal
+    """
+    for step in rep0.keys():
+        torch.testing.assert_close(
+            rep1[step]["user"]["default"]["original_params"],
+            rep0[step]["user"]["default"]["original_params"],
+            check_device=False,
+        )
+        torch.testing.assert_close(
+            rep1[step]["user"]["default"]["outer_optim"],
+            rep0[step]["user"]["default"]["outer_optim"],
+            check_device=False,
+        )
 
 
 class LocalSGDIntegTest(TestCase):
@@ -447,6 +474,9 @@ class LocalSGDIntegTest(TestCase):
             state_dicts = []
 
             for fut in as_completed(futures):
+                continue
+
+            for fut in futures:
                 try:
                     state_dicts.append(fut.result()[0])
                 except Exception as e:
@@ -457,33 +487,23 @@ class LocalSGDIntegTest(TestCase):
 
         rep0, rep1 = state_dicts
 
-        for step in rep0.keys():
-            # Inner optimizer and local model parameters will be different e.g.
-            # with 2 replicas r1 and r2, we sync every 2 steps
-            #
-            # - Manager Step 1
-            #   - Step 1: r1 and r2 step
-            #   - Step 2: r1 and r2 step, sync the model, quorum succeeds
-            # - Manager Step 2
-            #   - Step 1: r1 steps but r2 fails
-            #   - Step 2:
-            #     - r1 steps, sync fails because r2 is down
-            #     - r1 recovers r2 from the model state at this step
-            #       that is different from the model for r1 at the beginning
-            #       of step Manager Step 2
-            #
-            # Outer optimizer and global model should be the same
+        # Inner optimizer and local model parameters will be different e.g.
+        # with 2 replicas r1 and r2, we sync every 2 steps
+        #
+        # - Manager Step 1
+        #   - Step 1: r1 and r2 step
+        #   - Step 2: r1 and r2 step, sync the model, quorum succeeds
+        # - Manager Step 2
+        #   - Step 1: r1 steps but r2 fails
+        #   - Step 2:
+        #     - r1 steps, sync fails because r2 is down
+        #     - r1 recovers r2 from the model state at this step
+        #       that is different from the model for r1 at the beginning
+        #       of step Manager Step 2
+        #
+        # Outer optimizer and global model should be the same
+        assert_equal_global_state(rep1, rep0)
 
-            torch.testing.assert_close(
-                rep1[step]["user"]["default"]["original_params"],
-                rep0[step]["user"]["default"]["original_params"],
-                check_device=False,
-            )
-            torch.testing.assert_close(
-                rep1[step]["user"]["default"]["outer_optim"],
-                rep0[step]["user"]["default"]["outer_optim"],
-                check_device=False,
-            )
         self.assertEqual(failure_injectors[1].count, 1)
 
     # pyre-fixme[56]: Pyre was not able to infer the type of argument
@@ -552,6 +572,8 @@ class LocalSGDIntegTest(TestCase):
 
         rep0, rep1 = state_dicts
 
+        assert_equal_global_state(rep1, rep0)
+
         for step in rep1.keys():
             if step == 2:
                 # Replica 0 should have reset its `local_step` after failure
@@ -562,14 +584,93 @@ class LocalSGDIntegTest(TestCase):
                     rep0[step]["user"]["local_step"], rep1[step]["user"]["local_step"]
                 )
 
-            torch.testing.assert_close(
-                rep1[step]["user"]["default"]["original_params"],
-                rep0[step]["user"]["default"]["original_params"],
-                check_device=False,
-            )
-            torch.testing.assert_close(
-                rep1[step]["user"]["default"]["outer_optim"],
-                rep0[step]["user"]["default"]["outer_optim"],
-                check_device=False,
-            )
         self.assertEqual(failure_injectors[1].count, 1)
+
+    CONFIG: list[tuple[bool, int, int]] = [
+        (use_cuda, n_fragments, fragment_sync_delay)
+        for use_cuda in [True, False]
+        for n_fragments in [1, 2]
+        for fragment_sync_delay in [0, 1]
+    ]
+
+    # pyre-fixme[56]: Pyre was not able to infer the type of argument
+    @skipIf(sys.platform == "darwin", "not reliable on mac")
+    @parameterized.expand(CONFIG)
+    def test_streaming_diloco_upscale(
+        self, use_cuda: bool, n_fragments: int, fragment_sync_delay: int
+    ) -> None:
+        # Skip the test if use_cuda is True and there are not enough GPUs
+        if use_cuda and torch.cuda.device_count() < 2:
+            self.skipTest("Not enough GPUs for CUDA test")
+
+        lighthouse = LighthouseServer(
+            bind="[::]:0",
+            min_replicas=2,
+        )
+        num_replicas = 3
+        futures = []
+        executors = []
+
+        barrier = threading.Barrier(num_replicas)
+
+        barrier_injectors = [
+            # Make this replica join after other replicas have made 2 steps
+            BarrierInjector().barrier_at(0, barrier),
+            BarrierInjector().barrier_at(2, barrier),
+            BarrierInjector().barrier_at(2, barrier),
+        ]
+
+        torch.manual_seed(42)
+        # Initialize the model so we can pass in the state_dict
+        m: nn.Module = MultiMyModel(2, 3, n_fragments)
+
+        for replica_id, barrier_injector in zip(range(num_replicas), barrier_injectors):
+            executor = ThreadPoolExecutor(max_workers=1)
+            executors.append(executor)
+            runner = Runner(
+                replica_id=replica_id,
+                num_replicas=num_replicas,
+                lighthouse_address=lighthouse.address(),
+                failure_injector=FailureInjector(),
+                barrier_injector=barrier_injector,
+                train_loop=diloco_train_loop,
+                train_loop_args={
+                    "model_state_dict": m.state_dict(),
+                    "n_fragments": n_fragments,
+                    "diloco_args": {
+                        "fragment_sync_delay": fragment_sync_delay,
+                        "sync_every": 4,
+                    },
+                },
+            )
+            futures.append(executor.submit(runner.run_replica))
+
+        state_dicts = []
+
+        for fut in as_completed(futures):
+            continue
+
+        for fut in futures:
+            try:
+                state_dicts.append(fut.result()[0])
+            except Exception as e:
+                print(e)
+                raise
+
+        lighthouse.shutdown()
+
+        rep0, rep1, rep2 = state_dicts
+
+        assert_equal_global_state(rep0, rep1)
+        assert_equal_global_state(rep0, rep2)
+
+        for step in rep0.keys():
+            self.assertEqual(
+                rep0[step]["user"]["local_step"], rep1[step]["user"]["local_step"]
+            )
+            self.assertEqual(
+                rep1[step]["user"]["local_step"], rep2[step]["user"]["local_step"]
+            )
+
+        for barrier_injector in barrier_injectors:
+            self.assertEqual(barrier_injector.count, 1)
