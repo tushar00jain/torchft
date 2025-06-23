@@ -680,6 +680,9 @@ class DiLoCo:
             # Get the correct step when. This will continue after other committed.
             self._quorum_loop()
             self._should_recover = False
+            # This is to be consistent with the nodes that are not recovering. They
+            # proceed with the code below on the step after quorum completes.
+            return
 
         # We need to make sure all nodes send the same fragments in order.
         # This is to avoid deadlocking e.g.

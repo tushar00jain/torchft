@@ -89,7 +89,12 @@ R = TypeVar("R", covariant=True)
 
 class TrainLoop(Protocol[R]):
     def __call__(
-        self, rank: int, store_port: int, device: torch.device, runner: "Runner"
+        self,
+        rank: int,
+        store_port: int,
+        device: torch.device,
+        runner: "Runner",
+        train_loop_args: dict[str, Any] = field(default_factory=dict),
     ) -> R: ...
 
 
@@ -137,6 +142,7 @@ class Runner:
                         store_port=store.port,
                         device=device,
                         runner=self,
+                        train_loop_args=self.train_loop_args,
                     )
                 )
 
@@ -170,6 +176,7 @@ def ddp_train_loop(
     store_port: int,
     device: torch.device,
     runner: Runner,
+    train_loop_args: dict[str, Any] = {},
 ) -> Dict[str, Dict[str, object]]:
     with ExitStack() as stack:
 
@@ -525,6 +532,7 @@ def all_reduce_callback(
     store_port: int,
     device: torch.device,
     runner: Runner,
+    train_loop_args: dict[str, Any] = {},
 ) -> Optional[torch.Tensor]:
     with ExitStack() as stack:
         print(f"worker {runner.replica_id=} {rank=} {runner.world_size=} starting")

@@ -2,13 +2,13 @@ import copy
 import logging
 import os
 import re
+import sys
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import ExitStack
 from datetime import timedelta
-from sys import platform
 from typing import Any, Dict
-from unittest import TestCase
+from unittest import TestCase, skipIf
 
 import torch
 from parameterized import parameterized
@@ -25,11 +25,40 @@ from torchft.process_group import ProcessGroupBabyNCCL, ProcessGroupGloo
 logger: logging.Logger = logging.getLogger(__name__)
 
 
+class MultiMyModel(torch.nn.Module):
+    def __init__(self, in_dim: int = 3, out_dim: int = 4, n_layers: int = 1) -> None:
+        super().__init__()
+        self.in_dim = in_dim
+
+        self.layers = torch.nn.ModuleList()
+        for i in range(n_layers):
+            self.layers.append(MyModel(in_dim, out_dim))
+            in_dim, out_dim = out_dim, in_dim
+
+        self.out_dim = in_dim
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        for layer in self.layers:
+            x = layer(x)
+        return x
+
+    def get_rand_inputs(
+        self, batch_size: int, device: torch.device = torch.device("cpu")
+    ) -> torch.Tensor:
+        return torch.rand(batch_size, self.in_dim, device=device)
+
+    def get_rand_labels(
+        self, batch_size: int, device: torch.device = torch.device("cpu")
+    ) -> torch.Tensor:
+        return torch.randint(self.out_dim, (batch_size,), device=device)
+
+
 def local_sgd_train_loop(
     rank: int,
     store_port: int,
     device: torch.device,
     runner: Runner,
+    train_loop_args: dict[str, Any] = {},
 ) -> Dict[str, Dict[str, object]]:
     with ExitStack() as stack:
 
@@ -99,11 +128,16 @@ def diloco_train_loop(
     store_port: int,
     device: torch.device,
     runner: Runner,
+    train_loop_args: dict[str, Any] = {},
 ) -> Dict[str, Dict[str, object]]:
+
+    model_state_dict = train_loop_args.get("model_state_dict", {})
+    n_fragments = train_loop_args.get("n_fragments", 1)
+    diloco_args = train_loop_args.get("diloco_args", {})
+
     with ExitStack() as stack:
         # Declare the model and optimizers
-        m: nn.Module = MyModel(2, 3)
-        model_state_dict: Dict[str, Any] = runner.train_loop_args["model_state_dict"]
+        m = MultiMyModel(2, 3, n_fragments)
         m.load_state_dict(model_state_dict)
         m.to(device)
 
@@ -119,18 +153,26 @@ def diloco_train_loop(
         def load_state_dict(state_dict: Dict[str, Dict[str, object]]) -> None:
             m.load_state_dict(state_dict["model"])
             m.to(device)
-            diloco._fragments[0].original_parameters = state_dict["original_params"]
-            for name in diloco._fragments[0].original_parameters.keys():
-                diloco._fragments[0].original_parameters[name] = (
-                    diloco._fragments[0].original_parameters[name].to(device)
-                )
+
+            for i, fragment in enumerate(diloco._fragments):
+                fragment.original_parameters = state_dict["original_params"][f"{i}"]
+
+            for fragment in diloco._fragments:
+                for name in fragment.original_parameters.keys():
+                    fragment.original_parameters[name] = fragment.original_parameters[
+                        name
+                    ].to(device)
+
             inner_optimizer.load_state_dict(state_dict["inner_optim"])
             outer_optimizer.load_state_dict(state_dict["outer_optim"])
 
         def state_dict() -> Dict[str, Dict[str, object]]:  # pyre-ignore[53]
             return {
                 "model": m.state_dict(),
-                "original_params": diloco._fragments[0].original_parameters,
+                "original_params": {
+                    f"{i}": fragment.original_parameters
+                    for i, fragment in enumerate(diloco._fragments)
+                },
                 "inner_optim": inner_optimizer.state_dict(),
                 "outer_optim": outer_optimizer.state_dict(),
             }
@@ -194,18 +236,24 @@ def diloco_train_loop(
 
         criterion = nn.CrossEntropyLoss()
         all_state_dicts = {}
+
+        if "sync_every" not in diloco_args:
+            diloco_args["sync_every"] = 2
+
         with DiLoCo(
             manager,
-            [m],
+            [layer for layer in m.layers],
             inner_optimizer,
             outer_optimizer,
             backup_device=device,
-            sync_every=2,
+            **diloco_args,
         ) as diloco:
             while True:
                 manager_curr_step = manager.current_step()
                 if manager_curr_step not in all_state_dicts:
-                    all_state_dicts[manager_curr_step] = copy.deepcopy(state_dict())
+                    all_state_dicts[manager_curr_step] = copy.deepcopy(
+                        manager._manager_state_dict()
+                    )
                 batch_size = 1
                 inputs = m.get_rand_inputs(batch_size, device=device)
                 labels = m.get_rand_labels(batch_size, device=device)
@@ -308,7 +356,7 @@ class LocalSGDIntegTest(TestCase):
 
         torch.manual_seed(42)
         # Initialize the model so we can pass in the state_dict
-        m: nn.Module = MyModel(2, 3)
+        m: nn.Module = MultiMyModel(2, 3, 1)
 
         with ThreadPoolExecutor(max_workers=num_replicas) as executor:
             for replica_id in range(num_replicas):
@@ -341,16 +389,18 @@ class LocalSGDIntegTest(TestCase):
         for step, state_dict in rep1.items():
             # inner optimizer will be different, outer optimizer and model should be the same
             torch.testing.assert_close(
-                state_dict["model"],
-                rep0[step]["model"],
+                state_dict["user"]["default"]["model"],
+                rep0[step]["user"]["default"]["model"],
                 check_device=False,
             )
             torch.testing.assert_close(
-                state_dict["outer_optim"],
-                rep0[step]["outer_optim"],
+                state_dict["user"]["default"]["outer_optim"],
+                rep0[step]["user"]["default"]["outer_optim"],
                 check_device=False,
             )
 
+    # pyre-fixme[56]: Pyre was not able to infer the type of argument
+    @skipIf(sys.platform == "darwin", "not reliable on mac")
     @parameterized.expand(
         [
             # (True,),
@@ -361,12 +411,6 @@ class LocalSGDIntegTest(TestCase):
         # Skip the test if use_cuda is True and there are not enough GPUs
         if use_cuda and torch.cuda.device_count() < 2:
             self.skipTest("Not enough GPUs for CUDA test")
-
-        if platform == "darwin":
-            # TODO: This is likely because of Gloo not releasing GIL.
-            # Fix in: https://github.com/pytorch/pytorch/pull/154976
-            # Once this makes it to a stable package, we can re-enable this test.
-            self.skipTest("Known issue in Gloo")
 
         lighthouse = LighthouseServer(
             bind="[::]:0",
@@ -382,7 +426,7 @@ class LocalSGDIntegTest(TestCase):
 
         torch.manual_seed(42)
         # Initialize the model so we can pass in the state_dict
-        m: nn.Module = MyModel(2, 3)
+        m: nn.Module = MultiMyModel(2, 3, 1)
 
         with ThreadPoolExecutor(max_workers=num_replicas) as executor:
             for replica_id, failure_injector in zip(
@@ -431,13 +475,101 @@ class LocalSGDIntegTest(TestCase):
             # Outer optimizer and global model should be the same
 
             torch.testing.assert_close(
-                rep1[step]["original_params"],
-                rep0[step]["original_params"],
+                rep1[step]["user"]["default"]["original_params"],
+                rep0[step]["user"]["default"]["original_params"],
                 check_device=False,
             )
             torch.testing.assert_close(
-                rep1[step]["outer_optim"],
-                rep0[step]["outer_optim"],
+                rep1[step]["user"]["default"]["outer_optim"],
+                rep0[step]["user"]["default"]["outer_optim"],
+                check_device=False,
+            )
+        self.assertEqual(failure_injectors[1].count, 1)
+
+    # pyre-fixme[56]: Pyre was not able to infer the type of argument
+    @skipIf(sys.platform == "darwin", "not reliable on mac")
+    @parameterized.expand(
+        [
+            # (True,),
+            (False,),
+        ]
+    )
+    def test_streaming_diloco_recovery(self, use_cuda: bool) -> None:
+        # Skip the test if use_cuda is True and there are not enough GPUs
+        if use_cuda and torch.cuda.device_count() < 2:
+            self.skipTest("Not enough GPUs for CUDA test")
+
+        lighthouse = LighthouseServer(
+            bind="[::]:0",
+            min_replicas=2,
+        )
+        num_replicas = 2
+        futures = []
+
+        failure_injectors = [
+            FailureInjector(),
+            FailureInjector().fail_at(0, 2),
+        ]
+
+        torch.manual_seed(42)
+        # Initialize the model so we can pass in the state_dict
+        m: nn.Module = MultiMyModel(2, 3, 2)
+
+        with ThreadPoolExecutor(max_workers=num_replicas) as executor:
+            for replica_id, failure_injector in zip(
+                range(num_replicas), failure_injectors
+            ):
+                runner = Runner(
+                    replica_id=replica_id,
+                    num_replicas=num_replicas,
+                    lighthouse_address=lighthouse.address(),
+                    failure_injector=failure_injector,
+                    train_loop=diloco_train_loop,
+                    train_loop_args={
+                        "model_state_dict": m.state_dict(),
+                        "n_fragments": 2,
+                        "diloco_args": {
+                            "fragment_sync_delay": 1,
+                            "sync_every": 4,
+                        },
+                    },
+                )
+                futures.append(executor.submit(runner.run_replica))
+
+            state_dicts = []
+
+            for fut in as_completed(futures):
+                continue
+
+            for fut in futures:
+                try:
+                    state_dicts.append(fut.result()[0])
+                except Exception as e:
+                    print(e)
+                    raise
+
+        lighthouse.shutdown()
+
+        rep0, rep1 = state_dicts
+
+        for step in rep1.keys():
+            if step == 2:
+                # Replica 0 should have reset its `local_step` after failure
+                self.assertEqual(rep1[step]["user"]["local_step"], 0)
+                self.assertEqual(rep0[step]["user"]["local_step"], 5)
+            else:
+                self.assertEqual(
+                    rep0[step]["user"]["local_step"], rep1[step]["user"]["local_step"]
+                )
+
+            torch.testing.assert_close(
+                rep1[step]["user"]["default"]["original_params"],
+                rep0[step]["user"]["default"]["original_params"],
+                check_device=False,
+            )
+            torch.testing.assert_close(
+                rep1[step]["user"]["default"]["outer_optim"],
+                rep0[step]["user"]["default"]["outer_optim"],
                 check_device=False,
             )
         self.assertEqual(failure_injectors[1].count, 1)
