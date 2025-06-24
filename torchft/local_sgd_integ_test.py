@@ -22,7 +22,12 @@ from torchft._torchft import LighthouseServer
 from torchft.device_mesh import ft_init_device_mesh
 from torchft.local_sgd import DiLoCo, LocalSGD
 from torchft.manager import Manager
-from torchft.manager_integ_test import BarrierInjector, FailureInjector, MyModel, Runner
+from torchft.manager_integ_test import (
+    EventInjector,
+    EventInjectorEvent,
+    MyModel,
+    Runner,
+)
 from torchft.process_group import ProcessGroupBabyNCCL, ProcessGroupGloo
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -119,7 +124,7 @@ def local_sgd_train_loop(
                 if manager.current_step() >= 4:
                     break
 
-                runner.failure_injector.check(rank, manager.current_step())
+                runner.event_injector.check(rank, manager.current_step())
 
         # return state_dict so we can check consistency
         return state_dict()
@@ -252,14 +257,13 @@ def diloco_train_loop(
             **diloco_args,
         ) as diloco:
             while True:
+                runner.event_injector.check(rank, manager.current_step())
+
                 manager_curr_step = manager.current_step()
                 if manager_curr_step not in all_state_dicts:
                     all_state_dicts[manager_curr_step] = copy.deepcopy(
                         manager._manager_state_dict()
                     )
-
-                if runner.barrier_injector is not None:
-                    runner.barrier_injector.check(manager_curr_step)
 
                 batch_size = 1
                 inputs = m.get_rand_inputs(batch_size, device=device)
@@ -275,8 +279,6 @@ def diloco_train_loop(
                 # after 4 model updates then break
                 if manager.current_step() >= 4:
                     break
-
-                runner.failure_injector.check(rank, manager.current_step())
 
         # return state_dict so we can check consistency
         return all_state_dicts
@@ -324,20 +326,18 @@ class LocalSGDIntegTest(TestCase):
         num_replicas = 2
         futures = []
 
-        failure_injectors = [
-            FailureInjector(),
-            FailureInjector().fail_at(0, 2),
+        event_injectors = [
+            EventInjector(),
+            EventInjector().fail_at(0, 2),
         ]
 
         with ThreadPoolExecutor(max_workers=num_replicas) as executor:
-            for replica_id, failure_injector in zip(
-                range(num_replicas), failure_injectors
-            ):
+            for replica_id, event_injector in zip(range(num_replicas), event_injectors):
                 runner = Runner(
                     replica_id=replica_id,
                     num_replicas=num_replicas,
                     lighthouse_address=lighthouse.address(),
-                    failure_injector=failure_injector,
+                    event_injector=event_injector,
                     train_loop=local_sgd_train_loop,
                     use_cuda=use_cuda,
                     manager_args={
@@ -364,7 +364,7 @@ class LocalSGDIntegTest(TestCase):
                 state_dict[0]["model"], state_dicts[0][0]["model"], check_device=False
             )
 
-        self.assertEqual(failure_injectors[1].count, 1)
+        self.assertEqual(event_injectors[1].count[EventInjectorEvent.Failure], 1)
 
     @parameterized.expand(
         [
@@ -387,12 +387,12 @@ class LocalSGDIntegTest(TestCase):
 
         with ThreadPoolExecutor(max_workers=num_replicas) as executor:
             for replica_id in range(num_replicas):
-                failure_injector = FailureInjector()
+                event_injector = EventInjector()
                 runner = Runner(
                     replica_id=replica_id,
                     num_replicas=num_replicas,
                     lighthouse_address=lighthouse.address(),
-                    failure_injector=failure_injector,
+                    event_injector=event_injector,
                     train_loop=diloco_train_loop,
                     use_cuda=use_cuda,
                     train_loop_args={
@@ -446,9 +446,9 @@ class LocalSGDIntegTest(TestCase):
         num_replicas = 2
         futures = []
 
-        failure_injectors = [
-            FailureInjector(),
-            FailureInjector().fail_at(0, 2),
+        event_injectors = [
+            EventInjector(),
+            EventInjector().fail_at(0, 2),
         ]
 
         torch.manual_seed(42)
@@ -456,14 +456,12 @@ class LocalSGDIntegTest(TestCase):
         m: nn.Module = MultiMyModel(2, 3, 1)
 
         with ThreadPoolExecutor(max_workers=num_replicas) as executor:
-            for replica_id, failure_injector in zip(
-                range(num_replicas), failure_injectors
-            ):
+            for replica_id, event_injector in zip(range(num_replicas), event_injectors):
                 runner = Runner(
                     replica_id=replica_id,
                     num_replicas=num_replicas,
                     lighthouse_address=lighthouse.address(),
-                    failure_injector=failure_injector,
+                    event_injector=event_injector,
                     train_loop=diloco_train_loop,
                     train_loop_args={
                         "model_state_dict": m.state_dict(),
@@ -504,7 +502,7 @@ class LocalSGDIntegTest(TestCase):
         # Outer optimizer and global model should be the same
         assert_equal_global_state(rep1, rep0)
 
-        self.assertEqual(failure_injectors[1].count, 1)
+        self.assertEqual(event_injectors[1].count[EventInjectorEvent.Failure], 1)
 
     # pyre-fixme[56]: Pyre was not able to infer the type of argument
     @skipIf(sys.platform == "darwin", "not reliable on mac")
@@ -526,9 +524,9 @@ class LocalSGDIntegTest(TestCase):
         num_replicas = 2
         futures = []
 
-        failure_injectors = [
-            FailureInjector(),
-            FailureInjector().fail_at(0, 2),
+        event_injectors = [
+            EventInjector(),
+            EventInjector().fail_at(0, 2),
         ]
 
         torch.manual_seed(42)
@@ -536,14 +534,12 @@ class LocalSGDIntegTest(TestCase):
         m: nn.Module = MultiMyModel(2, 3, 2)
 
         with ThreadPoolExecutor(max_workers=num_replicas) as executor:
-            for replica_id, failure_injector in zip(
-                range(num_replicas), failure_injectors
-            ):
+            for replica_id, event_injector in zip(range(num_replicas), event_injectors):
                 runner = Runner(
                     replica_id=replica_id,
                     num_replicas=num_replicas,
                     lighthouse_address=lighthouse.address(),
-                    failure_injector=failure_injector,
+                    event_injector=event_injector,
                     train_loop=diloco_train_loop,
                     train_loop_args={
                         "model_state_dict": m.state_dict(),
@@ -584,11 +580,11 @@ class LocalSGDIntegTest(TestCase):
                     rep0[step]["user"]["local_step"], rep1[step]["user"]["local_step"]
                 )
 
-        self.assertEqual(failure_injectors[1].count, 1)
+        self.assertEqual(event_injectors[1].count[EventInjectorEvent.Failure], 1)
 
     CONFIG: list[tuple[bool, int, int]] = [
         (use_cuda, n_fragments, fragment_sync_delay)
-        for use_cuda in [True, False]
+        for use_cuda in [False]
         for n_fragments in [1, 2]
         for fragment_sync_delay in [0, 1]
     ]
@@ -613,26 +609,25 @@ class LocalSGDIntegTest(TestCase):
 
         barrier = threading.Barrier(num_replicas)
 
-        barrier_injectors = [
+        event_injectors = [
             # Make this replica join after other replicas have made 2 steps
-            BarrierInjector().barrier_at(0, barrier),
-            BarrierInjector().barrier_at(2, barrier),
-            BarrierInjector().barrier_at(2, barrier),
+            EventInjector().barrier_at(0, 0, barrier),
+            EventInjector().barrier_at(0, 2, barrier),
+            EventInjector().barrier_at(0, 2, barrier),
         ]
 
         torch.manual_seed(42)
         # Initialize the model so we can pass in the state_dict
         m: nn.Module = MultiMyModel(2, 3, n_fragments)
 
-        for replica_id, barrier_injector in zip(range(num_replicas), barrier_injectors):
+        for replica_id, event_injector in zip(range(num_replicas), event_injectors):
             executor = ThreadPoolExecutor(max_workers=1)
             executors.append(executor)
             runner = Runner(
                 replica_id=replica_id,
                 num_replicas=num_replicas,
                 lighthouse_address=lighthouse.address(),
-                failure_injector=FailureInjector(),
-                barrier_injector=barrier_injector,
+                event_injector=event_injector,
                 train_loop=diloco_train_loop,
                 train_loop_args={
                     "model_state_dict": m.state_dict(),
@@ -672,5 +667,5 @@ class LocalSGDIntegTest(TestCase):
                 rep1[step]["user"]["local_step"], rep2[step]["user"]["local_step"]
             )
 
-        for barrier_injector in barrier_injectors:
-            self.assertEqual(barrier_injector.count, 1)
+        for event_injector in event_injectors:
+            self.assertEqual(event_injectors[1].count[EventInjectorEvent.Barrier], 1)

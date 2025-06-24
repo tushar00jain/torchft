@@ -3,11 +3,24 @@ import logging
 import threading
 import time
 import traceback
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import Any, Dict, Generator, List, Optional, Protocol, Set, Tuple, TypeVar
+from enum import Enum, auto
+from typing import (
+    Any,
+    Dict,
+    Generator,
+    List,
+    Optional,
+    Protocol,
+    Set,
+    Tuple,
+    TypeVar,
+    cast,
+)
 from unittest import TestCase
 
 import torch
@@ -62,49 +75,61 @@ class InjectedFailure(Exception):
     pass
 
 
-class FailureInjector:
+class EventInjectorEvent(Enum):
+    Failure = auto()
+    # Used to wait for a rank to reach a certain step before continuing.
+    # Users need to make sure the size of the barrier is appropriately set.
+    Barrier = auto()
+
+
+class EventInjectorInfo:
+    def __init__(self, event: EventInjectorEvent, data: object) -> None:
+        self.event = event
+        self.data = data
+
+
+class EventInjector:
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._failures: Set[Tuple[int, int]] = set()
-        self.count = 0
+        self._events: Dict[Tuple[int, int], EventInjectorInfo] = {}
+        self.count: dict[EventInjectorEvent, int] = defaultdict(int)
 
-    def fail_at(self, rank: int, step: int) -> "FailureInjector":
+    def fail_at(self, rank: int, step: int) -> "EventInjector":
         with self._lock:
-            self._failures.add((rank, step))
+            assert (rank, step) not in self._events
+            self._events[(rank, step)] = EventInjectorInfo(
+                EventInjectorEvent.Failure, None
+            )
+            return self
+
+    def barrier_at(
+        self, rank: int, step: int, barrier: threading.Barrier
+    ) -> "EventInjector":
+        with self._lock:
+            assert (rank, step) not in self._events
+            self._events[(rank, step)] = EventInjectorInfo(
+                EventInjectorEvent.Barrier, barrier
+            )
             return self
 
     def check(self, rank: int, step: int) -> None:
         with self._lock:
             key = (rank, step)
-            if key in self._failures:
-                self.count += 1
-                self._failures.remove(key)
-                print(f"injecting failure {rank=} {step=}")
-                raise InjectedFailure(f"injected failure {rank=} {step=}")
+            if key in self._events:
+                event_info = self._events.pop(key)
 
+                self.count[event_info.event] += 1
 
-class BarrierInjector:
-    """
-    Used to wait for all ranks and replicas to reach a certain step before continuing.
-    Users need to make sure the size of the barrier is appropriately set.
-    """
+                if event_info.event == EventInjectorEvent.Failure:
+                    print(f"injecting failure {rank=} {step=}")
+                    raise InjectedFailure(f"injected failure {rank=} {step=}")
 
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._barriers: Dict[int, threading.Barrier] = dict()
-        self.count = 0
+                if event_info.event == EventInjectorEvent.Barrier:
+                    print(f"waiting for barrier {rank=} {step=}")
+                    cast(threading.Barrier, event_info.data).wait()
+                    return
 
-    def barrier_at(self, step: int, barrier: threading.Barrier) -> "BarrierInjector":
-        with self._lock:
-            self._barriers[step] = barrier
-            return self
-
-    def check(self, step: int) -> None:
-        with self._lock:
-            if step in self._barriers:
-                self.count += 1
-                self._barriers[step].wait()
-                self._barriers.pop(step)
+                raise RuntimeError(f"unknown event {event_info.event}")
 
 
 # R for an arbitrary return type
@@ -127,10 +152,9 @@ class Runner:
     replica_id: int
     num_replicas: int
     lighthouse_address: str
-    failure_injector: FailureInjector
+    event_injector: EventInjector
     train_loop: TrainLoop[object]
 
-    barrier_injector: Optional[BarrierInjector] = None
     use_cuda: bool = False
     world_size: int = 1
     attempts: int = 3
@@ -248,9 +272,6 @@ def ddp_train_loop(
         criterion = nn.CrossEntropyLoss()
 
         while True:
-            if runner.barrier_injector is not None:
-                runner.barrier_injector.check(manager.current_step())
-
             inputs = torch.rand(2, 3)
             labels = torch.randint(4, (2,))
 
@@ -265,7 +286,7 @@ def ddp_train_loop(
             if manager.current_step() >= 4:
                 break
 
-            runner.failure_injector.check(rank, manager.current_step())
+            runner.event_injector.check(rank, manager.current_step())
 
         # return state_dict so we can check consistency
         return state_dict()
@@ -291,12 +312,12 @@ class ManagerIntegTest(TestCase):
 
         with ThreadPoolExecutor(max_workers=num_replicas) as executor:
             for replica_id in range(num_replicas):
-                failure_injector = FailureInjector()
+                event_injector = EventInjector()
                 runner = Runner(
                     replica_id=replica_id,
                     num_replicas=num_replicas,
                     lighthouse_address=lighthouse.address(),
-                    failure_injector=failure_injector,
+                    event_injector=event_injector,
                     train_loop=ddp_train_loop,
                 )
                 futures.append(executor.submit(runner.run_replica))
@@ -335,20 +356,18 @@ class ManagerIntegTest(TestCase):
         num_replicas = 2
         futures = []
 
-        failure_injectors = [
-            FailureInjector(),
-            FailureInjector().fail_at(0, 2),
+        event_injectors = [
+            EventInjector(),
+            EventInjector().fail_at(0, 2),
         ]
 
         with ThreadPoolExecutor(max_workers=num_replicas) as executor:
-            for replica_id, failure_injector in zip(
-                range(num_replicas), failure_injectors
-            ):
+            for replica_id, event_injector in zip(range(num_replicas), event_injectors):
                 runner = Runner(
                     replica_id=replica_id,
                     num_replicas=num_replicas,
                     lighthouse_address=lighthouse.address(),
-                    failure_injector=failure_injector,
+                    event_injector=event_injector,
                     manager_args={
                         "use_async_quorum": use_async_quorum,
                     },
@@ -370,7 +389,7 @@ class ManagerIntegTest(TestCase):
         for state_dict in state_dicts:
             torch.testing.assert_close(state_dict, state_dicts[0])
 
-        self.assertEqual(failure_injectors[1].count, 1)
+        self.assertEqual(event_injectors[1].count[EventInjectorEvent.Failure], 1)
 
     def test_ddp_skip_init_sync(
         self,
@@ -383,20 +402,18 @@ class ManagerIntegTest(TestCase):
         futures = []
 
         # no failures
-        failure_injectors = [
-            FailureInjector(),
-            FailureInjector(),
+        event_injectors = [
+            EventInjector(),
+            EventInjector(),
         ]
 
         with ThreadPoolExecutor(max_workers=num_replicas) as executor:
-            for replica_id, failure_injector in zip(
-                range(num_replicas), failure_injectors
-            ):
+            for replica_id, event_injector in zip(range(num_replicas), event_injectors):
                 runner = Runner(
                     replica_id=replica_id,
                     num_replicas=num_replicas,
                     lighthouse_address=lighthouse.address(),
-                    failure_injector=failure_injector,
+                    event_injector=event_injector,
                     manager_args={
                         "use_async_quorum": False,
                         "init_sync": False,
@@ -428,20 +445,18 @@ class ManagerIntegTest(TestCase):
         world_size = 2
         futures = []
 
-        failure_injectors = [
-            FailureInjector(),
-            FailureInjector().fail_at(0, 2).fail_at(1, 2),
+        event_injectors = [
+            EventInjector(),
+            EventInjector().fail_at(0, 2).fail_at(1, 2),
         ]
 
         with ThreadPoolExecutor(max_workers=num_replicas) as executor:
-            for replica_id, failure_injector in zip(
-                range(num_replicas), failure_injectors
-            ):
+            for replica_id, event_injector in zip(range(num_replicas), event_injectors):
                 runner = Runner(
                     replica_id=replica_id,
                     num_replicas=num_replicas,
                     lighthouse_address=lighthouse.address(),
-                    failure_injector=failure_injector,
+                    event_injector=event_injector,
                     world_size=world_size,
                     train_loop=ddp_train_loop,
                 )
@@ -528,12 +543,12 @@ class ManagerIntegTest(TestCase):
 
         with ThreadPoolExecutor(max_workers=num_replicas) as executor:
             for replica_id in range(num_replicas):
-                failure_injector = FailureInjector()
+                event_injector = EventInjector()
                 runner = Runner(
                     replica_id=replica_id,
                     num_replicas=num_replicas,
                     lighthouse_address=lighthouse.address(),
-                    failure_injector=failure_injector,
+                    event_injector=event_injector,
                     train_loop=all_reduce_callback,
                     use_cuda=use_cuda,
                 )
