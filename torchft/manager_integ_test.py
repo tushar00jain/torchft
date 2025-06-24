@@ -76,10 +76,13 @@ class InjectedFailure(Exception):
 
 
 class EventInjectorEvent(Enum):
+    # Crashes a rank
     Failure = auto()
     # Used to wait for a rank to reach a certain step before continuing.
     # Users need to make sure the size of the barrier is appropriately set.
     Barrier = auto()
+    # Fails the allreduce call made by a rank
+    AllreduceFailure = auto()
 
 
 class EventInjectorInfo:
@@ -90,15 +93,28 @@ class EventInjectorInfo:
 
 class EventInjector:
     def __init__(self) -> None:
+        self._manager: Optional[Manager] = None
         self._lock = threading.Lock()
         self._events: Dict[Tuple[int, int], EventInjectorInfo] = {}
         self.count: dict[EventInjectorEvent, int] = defaultdict(int)
+
+    def set_manager(self, manager: Manager) -> None:
+        with self._lock:
+            self._manager = manager
 
     def fail_at(self, rank: int, step: int) -> "EventInjector":
         with self._lock:
             assert (rank, step) not in self._events
             self._events[(rank, step)] = EventInjectorInfo(
                 EventInjectorEvent.Failure, None
+            )
+            return self
+
+    def fail_allreduce_at(self, rank: int, step: int) -> "EventInjector":
+        with self._lock:
+            assert (rank, step) not in self._events
+            self._events[(rank, step)] = EventInjectorInfo(
+                EventInjectorEvent.AllreduceFailure, None
             )
             return self
 
@@ -123,6 +139,12 @@ class EventInjector:
                 if event_info.event == EventInjectorEvent.Failure:
                     print(f"injecting failure {rank=} {step=}")
                     raise InjectedFailure(f"injected failure {rank=} {step=}")
+
+                if event_info.event == EventInjectorEvent.AllreduceFailure:
+                    print(f"injecting allreduce failure {rank=} {step=}")
+                    assert self._manager is not None
+                    self._manager.TEST_fail_allreduce()
+                    return
 
                 if event_info.event == EventInjectorEvent.Barrier:
                     print(f"waiting for barrier {rank=} {step=}")
