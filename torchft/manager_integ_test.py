@@ -83,6 +83,30 @@ class FailureInjector:
                 raise InjectedFailure(f"injected failure {rank=} {step=}")
 
 
+class BarrierInjector:
+    """
+    Used to wait for all ranks and replicas to reach a certain step before continuing.
+    Users need to make sure the size of the barrier is appropriately set.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._barriers: Dict[int, threading.Barrier] = dict()
+        self.count = 0
+
+    def barrier_at(self, step: int, barrier: threading.Barrier) -> "BarrierInjector":
+        with self._lock:
+            self._barriers[step] = barrier
+            return self
+
+    def check(self, step: int) -> None:
+        with self._lock:
+            if step in self._barriers:
+                self.count += 1
+                self._barriers[step].wait()
+                self._barriers.pop(step)
+
+
 # R for an arbitrary return type
 R = TypeVar("R", covariant=True)
 
@@ -106,6 +130,7 @@ class Runner:
     failure_injector: FailureInjector
     train_loop: TrainLoop[object]
 
+    barrier_injector: Optional[BarrierInjector] = None
     use_cuda: bool = False
     world_size: int = 1
     attempts: int = 3
@@ -223,6 +248,9 @@ def ddp_train_loop(
         criterion = nn.CrossEntropyLoss()
 
         while True:
+            if runner.barrier_injector is not None:
+                runner.barrier_injector.check(manager.current_step())
+
             inputs = torch.rand(2, 3)
             labels = torch.randint(4, (2,))
 
