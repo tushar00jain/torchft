@@ -268,6 +268,15 @@ class Manager:
         self._participating_replica_rank: Optional[int] = None
         self._participating_replica_world_size: int = 0
 
+        # used to artificially fail the next allreduce by tests
+        self._TEST_should_fail_allreduce = False
+
+    def TEST_fail_allreduce(self) -> None:
+        """
+        Fails the next allreduce. This is used for testing.
+        """
+        self._TEST_should_fail_allreduce = True
+
     def register_state_dict_fn(
         self,
         key: str,
@@ -355,6 +364,10 @@ class Manager:
                 fut: torch.futures.Future[List[torch.Tensor]],
             ) -> torch.Tensor:
                 nonlocal tensor, stream, num_participants
+
+                if self._TEST_should_fail_allreduce:
+                    self._TEST_should_fail_allreduce = False
+                    raise
 
                 # change the stream to avoid making the callback stream
                 # dependent on process group stream running the allreduce
