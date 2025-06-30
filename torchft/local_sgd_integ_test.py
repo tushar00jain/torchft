@@ -589,18 +589,19 @@ class LocalSGDIntegTest(TestCase):
 
         self.assertEqual(event_injectors[1].count[EventInjectorEvent.Failure], 1)
 
-    CONFIG: list[tuple[bool, int, int]] = [
-        (use_cuda, n_fragments, fragment_sync_delay)
+    CONFIG: list[tuple[bool, int, int, float]] = [
+        (use_cuda, n_fragments, fragment_sync_delay, alpha)
         for use_cuda in [False]
         for n_fragments in [1, 2]
         for fragment_sync_delay in [0, 1]
+        for alpha in [0.0, 0.5, 1.0]
     ]
 
     # pyre-fixme[56]: Pyre was not able to infer the type of argument
     @skipIf(sys.platform == "darwin", "not reliable on mac")
     @parameterized.expand(CONFIG)
     def test_streaming_diloco_upscale(
-        self, use_cuda: bool, n_fragments: int, fragment_sync_delay: int
+        self, use_cuda: bool, n_fragments: int, fragment_sync_delay: int, alpha: float
     ) -> None:
         # Skip the test if use_cuda is True and there are not enough GPUs
         if use_cuda and torch.cuda.device_count() < 2:
@@ -642,6 +643,7 @@ class LocalSGDIntegTest(TestCase):
                     "diloco_args": {
                         "fragment_sync_delay": fragment_sync_delay,
                         "sync_every": 4,
+                        "fragment_update_alpha": alpha,
                     },
                 },
             )
@@ -681,7 +683,7 @@ class LocalSGDIntegTest(TestCase):
     @skipIf(sys.platform == "darwin", "not reliable on mac")
     @parameterized.expand(CONFIG)
     def test_streaming_diloco_commit_failure(
-        self, use_cuda: bool, n_fragments: int, fragment_sync_delay: int
+        self, use_cuda: bool, n_fragments: int, fragment_sync_delay: int, alpha: float
     ) -> None:
         # Skip the test if use_cuda is True and there are not enough GPUs
         if use_cuda and torch.cuda.device_count() < 2:
