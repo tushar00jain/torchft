@@ -61,6 +61,12 @@ MANAGER_ADDR_KEY: str = "manager_addr"
 MANAGER_PORT_ENV: str = "TORCHFT_MANAGER_PORT"
 REPLICA_ID_KEY: str = "replica_id"
 
+# Environment variables for various timeouts. These can also be passed
+# in through the manager but the environment variables take precedence.
+TIMEOUT_SEC_ENV: str = "TORCHFT_TIMEOUT_SEC"
+QUORUM_TIMEOUT_SEC_ENV: str = "TORCHFT_QUORUM_TIMEOUT_SEC"
+CONNECT_TIMEOUT_SEC_ENV: str = "TORCHFT_CONNECT_TIMEOUT_SEC"
+
 T = TypeVar("T")
 
 
@@ -177,9 +183,29 @@ class Manager:
 
         self._pending_state_dict: Optional[Dict[str, object]] = None
         self._use_async_quorum = use_async_quorum
-        self._timeout = timeout
-        self._quorum_timeout = quorum_timeout
-        self._connect_timeout = connect_timeout
+
+        timeout_sec_env = os.environ.get(TIMEOUT_SEC_ENV, None)
+        if timeout_sec_env is not None:
+            self._timeout: timedelta = timedelta(seconds=int(timeout_sec_env))
+        else:
+            self._timeout: timedelta = timeout
+
+        quorum_timeout_sec_env = os.environ.get(QUORUM_TIMEOUT_SEC_ENV, None)
+        if quorum_timeout_sec_env is not None:
+            self._quorum_timeout: timedelta = timedelta(
+                seconds=int(quorum_timeout_sec_env)
+            )
+        else:
+            self._quorum_timeout: timedelta = timeout
+
+        connect_timeout_sec_env = os.environ.get(CONNECT_TIMEOUT_SEC_ENV, None)
+        if connect_timeout_sec_env is not None:
+            self._connect_timeout: timedelta = timedelta(
+                seconds=int(connect_timeout_sec_env)
+            )
+        else:
+            self._connect_timeout: timedelta = timeout
+
         self._replica_world_size_mode = world_size_mode
         self._init_sync = init_sync
         self._max_retries = max_retries
