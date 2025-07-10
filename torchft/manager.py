@@ -61,6 +61,12 @@ MANAGER_ADDR_KEY: str = "manager_addr"
 MANAGER_PORT_ENV: str = "TORCHFT_MANAGER_PORT"
 REPLICA_ID_KEY: str = "replica_id"
 
+# Environment variables for various timeouts. These can also be passed
+# in through the manager but the environment variables take precedence.
+TIMEOUT_ENV: str = "TORCHFT_TIMEOUT"
+QUORUM_TIMEOUT_ENV: str = "TORCHFT_QUORUM_TIMEOUT"
+CONNECT_TIMEOUT_ENV: str = "TORCHFT_CONNECT_TIMEOUT"
+
 T = TypeVar("T")
 
 
@@ -177,9 +183,9 @@ class Manager:
 
         self._pending_state_dict: Optional[Dict[str, object]] = None
         self._use_async_quorum = use_async_quorum
-        self._timeout = timeout
-        self._quorum_timeout = quorum_timeout
-        self._connect_timeout = connect_timeout
+        self._timeout = os.environ.get(TIMEOUT_ENV, timeout)
+        self._quorum_timeout = os.environ.get(QUORUM_TIMEOUT_ENV, quorum_timeout)
+        self._connect_timeout = os.environ.get(CONNECT_TIMEOUT_ENV, connect_timeout)
         self._replica_world_size_mode = world_size_mode
         self._init_sync = init_sync
         self._max_retries = max_retries
