@@ -550,7 +550,8 @@ class DiLoCo:
         manager: Manager,
         model_fragments: List[nn.Module],
         inner_optimizer: optim.Optimizer,
-        outer_optimizer: optim.Optimizer,
+        # TODO: this is for backward compatibility
+        outer_optimizer: optim.Optimizer | list[optim.Optimizer],
         sync_every: int,
         backup_device: Optional[torch.device] = None,
         pin_memory: bool = True,
@@ -574,6 +575,11 @@ class DiLoCo:
                                  synchronization. This is the "tao" parameter in the Streaming DiLoCo paper.
             fragment_update_alpha: Determines how to mix the local and global optimized parameters
         """
+
+        if isinstance(outer_optimizer, list):
+            assert len(outer_optimizer) == len(
+                model_fragments
+            ), "The number of outer optimizers must match the number of model fragments"
 
         if manager._use_async_quorum:
             raise ValueError(
@@ -623,8 +629,11 @@ class DiLoCo:
                 model_fragment,
                 math.floor((sync_every / len(model_fragments)) * (i + 1)),
                 inner_optimizer,
-                # TODO: Support different outer optimizers for each fragment
-                outer_optimizer,
+                (
+                    outer_optimizer[i]
+                    if isinstance(outer_optimizer, list)
+                    else outer_optimizer
+                ),
                 sync_every,
                 backup_device,
                 pin_memory,
