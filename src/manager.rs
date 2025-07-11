@@ -204,14 +204,25 @@ impl Manager {
         });
         lighthouse_request.set_timeout(timeout);
 
-        let response = tokio::time::timeout(timeout, client.quorum(lighthouse_request))
-            .await
-            .unwrap_or_else(|e| {
-                Err(Status::cancelled(format!(
-                    "lighthouse quorum timed out: {}",
-                    e.to_string()
-                )))
-            })?;
+        let response = {
+            loop {
+                let response = tokio::time::timeout(timeout, client.quorum(lighthouse_request))
+                    .await;
+
+                match response {
+                    Ok(response) => response,
+                    Err(e) => {
+                        info_with_replica!(
+                            self.replica_id,
+                                "lighthouse quorum timed out: {}",
+                                e.to_string()
+                        );
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    }
+                }
+            }
+        };
+
         let resp = response.into_inner();
 
         info_with_replica!(self.replica_id, "got lighthouse quorum {:?}", resp);
