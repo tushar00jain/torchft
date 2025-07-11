@@ -683,7 +683,7 @@ class LocalSGDIntegTest(TestCase):
     @skipIf(sys.platform == "darwin", "not reliable on mac")
     @parameterized.expand(CONFIG)
     def test_streaming_diloco_commit_failure(
-        self, use_cuda: bool, n_fragments: int, fragment_sync_delay: int
+        self, use_cuda: bool, n_fragments: int, fragment_sync_delay: int, alpha: float
     ) -> None:
         # Skip the test if use_cuda is True and there are not enough GPUs
         if use_cuda and torch.cuda.device_count() < 2:
