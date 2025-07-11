@@ -67,6 +67,11 @@ TIMEOUT_SEC_ENV: str = "TORCHFT_TIMEOUT_SEC"
 QUORUM_TIMEOUT_SEC_ENV: str = "TORCHFT_QUORUM_TIMEOUT_SEC"
 CONNECT_TIMEOUT_SEC_ENV: str = "TORCHFT_CONNECT_TIMEOUT_SEC"
 
+# Environment variable for the number of retries to use for the quorum.
+# We need to retry quorum in case lighthouse fails. Otherwise, if we
+# crash if call to quorum fails, all replicas will crash.
+QUORUM_RETRIES_ENV: str = "TORCHFT_QUORUM_RETRIES"
+
 T = TypeVar("T")
 
 
@@ -271,6 +276,7 @@ class Manager:
                 world_size=group_world_size,
                 heartbeat_interval=heartbeat_interval,
                 connect_timeout=connect_timeout,
+                quorum_retries=int(os.environ.get(QUORUM_RETRIES_ENV, 0)),
             )
 
             self._store.set(MANAGER_ADDR_KEY, self._manager.address())
