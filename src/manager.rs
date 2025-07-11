@@ -10,6 +10,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::torchftpb::LighthouseQuorumResponse;
 use anyhow::Result;
 use tokio::sync::broadcast;
 use tokio::sync::Mutex;
@@ -72,6 +73,7 @@ pub struct Manager {
     local_addr: SocketAddr,
     heartbeat_interval: Duration,
     lighthouse_client: LighthouseServiceClient<Channel>,
+    quorum_retries: i64,
 }
 
 pub async fn manager_client_new(
@@ -108,6 +110,7 @@ impl Manager {
         world_size: u64,
         heartbeat_interval: Duration,
         connect_timeout: Duration,
+        quorum_retries: i64,
     ) -> Result<Arc<Self>> {
         let listener = tokio::net::TcpListener::bind(&bind).await?;
         let local_addr = listener.local_addr()?;
@@ -135,6 +138,7 @@ impl Manager {
             }),
             local_addr: local_addr,
             listener: Mutex::new(Some(listener)),
+            quorum_retries,
         }))
     }
 
@@ -197,21 +201,13 @@ impl Manager {
 
         // TODO: don't hold the lock during quorum
 
-        let mut client = self.lighthouse_client.clone();
-
-        let mut lighthouse_request = tonic::Request::new(LighthouseQuorumRequest {
+        let lighthouse_request = LighthouseQuorumRequest {
             requester: Some(requester),
-        });
-        lighthouse_request.set_timeout(timeout);
+        };
 
-        let response = tokio::time::timeout(timeout, client.quorum(lighthouse_request))
-            .await
-            .unwrap_or_else(|e| {
-                Err(Status::cancelled(format!(
-                    "lighthouse quorum timed out: {}",
-                    e.to_string()
-                )))
-            })?;
+        let response = self
+            ._quorum_with_retries(timeout, lighthouse_request)
+            .await?;
         let resp = response.into_inner();
 
         info_with_replica!(self.replica_id, "got lighthouse quorum {:?}", resp);
@@ -225,6 +221,45 @@ impl Manager {
             .map_err(|e| Status::from_error(e.into()))?;
 
         Ok(())
+    }
+
+    async fn _quorum_with_retries(
+        &self,
+        timeout: Duration,
+        lighthouse_request: LighthouseQuorumRequest,
+    ) -> Result<tonic::Response<LighthouseQuorumResponse>, Status> {
+        let mut client = self.lighthouse_client.clone();
+
+        let mut retry_count = 0;
+        loop {
+            let mut request = tonic::Request::new(lighthouse_request.clone());
+            request.set_timeout(timeout);
+
+            let result = tokio::time::timeout(timeout, client.quorum(request)).await;
+
+            match result {
+                Ok(response) => {
+                    return response;
+                }
+                Err(e) => {
+                    info_with_replica!(
+                        self.replica_id,
+                        "lighthouse quorum timed out: {}",
+                        e.to_string()
+                    );
+
+                    if retry_count == self.quorum_retries {
+                        return Err(Status::internal(format!(
+                            "lighthouse quorum timed out after {} retries",
+                            retry_count
+                        )));
+                    }
+
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    retry_count += 1;
+                }
+            }
+        }
     }
 }
 
@@ -563,6 +598,7 @@ mod tests {
             2,                          // world size
             Duration::from_millis(100), // heartbeat interval
             Duration::from_secs(10),    // connect timeout
+            0,                          // quorum retries
         )
         .await?;
         let manager_fut = tokio::spawn(manager._run_grpc());
@@ -610,6 +646,7 @@ mod tests {
             1,                          // world size
             Duration::from_millis(100), // heartbeat interval
             Duration::from_secs(10),    // connect timeout
+            0,                          // quorum retries
         )
         .await?;
         let manager_fut = tokio::spawn(manager.clone().run());
@@ -671,6 +708,7 @@ mod tests {
                     1,                          // world size
                     Duration::from_millis(100), // heartbeat interval
                     Duration::from_secs(10),    // connect timeout
+                    0,                          // quorum retries
                 )
                 .await?;
                 let manager_fut = tokio::spawn(manager.clone().run());
@@ -737,6 +775,7 @@ mod tests {
             1,                          // world size
             Duration::from_millis(100), // heartbeat interval
             Duration::from_secs(10),    // connect timeout
+            0,                          // quorum retries
         )
         .await?;
         let manager_fut = tokio::spawn(manager.clone().run());
