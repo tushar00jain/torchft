@@ -193,9 +193,11 @@ impl ManagerClient {
                 commit_failures: commit_failures,
             });
 
-            // This timeout is processed on the server side so we also enable
-            // keep alives to detect server health.
-            request.set_timeout(timeout);
+            // TODO: Have some mechanism to detect server health.
+            //
+            // We can't use timeouts here e.g. using `request.set_timeout(timeout)`
+            // because the server might need to retry quorum requests to the
+            // lighthouse server.
 
             let response = self.runtime.block_on(self.client.clone().quorum(request))?;
             let resp = response.into_inner();
