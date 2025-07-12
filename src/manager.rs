@@ -60,6 +60,8 @@ struct ManagerState {
     should_commit_channel: broadcast::Sender<bool>,
     should_commit_failures: HashSet<i64>,
     should_commit_count: HashSet<i64>,
+
+    lighthouse_client: LighthouseServiceClient<Channel>,
 }
 
 pub struct Manager {
@@ -71,7 +73,8 @@ pub struct Manager {
     listener: Mutex<Option<tokio::net::TcpListener>>,
     local_addr: SocketAddr,
     heartbeat_interval: Duration,
-    lighthouse_client: LighthouseServiceClient<Channel>,
+    lighthouse_addr: String,
+    connect_timeout: Duration,
 }
 
 pub async fn manager_client_new(
@@ -119,7 +122,8 @@ impl Manager {
 
         Ok(Arc::new(Self {
             replica_id: replica_id,
-            lighthouse_client: client,
+            lighthouse_addr,
+            connect_timeout,
             hostname: hostname,
             store_address: store_addr,
             world_size: world_size,
@@ -132,6 +136,8 @@ impl Manager {
                 should_commit_channel: should_commit_tx,
                 should_commit_count: HashSet::new(),
                 should_commit_failures: HashSet::new(),
+
+                lighthouse_client: client,
             }),
             local_addr: local_addr,
             listener: Mutex::new(Some(listener)),
@@ -170,34 +176,32 @@ impl Manager {
     }
 
     async fn _run_heartbeat(self: Arc<Self>) -> Result<()> {
-        let mut client = self.lighthouse_client.clone();
         loop {
+            let mut client = {
+                let state = self.state.lock().await;
+                state.lighthouse_client.clone()
+            };
+
             let request = tonic::Request::new(LighthouseHeartbeatRequest {
                 replica_id: self.replica_id.clone(),
             });
 
-            let _response = client.heartbeat(request).await;
+            if let Err(e) = client.heartbeat(request).await {
+                error!("Failed to send heartbeat to lighthouse: {}", e.to_string());
+                self.create_lighthouse_client().await;
+            }
 
             sleep(self.heartbeat_interval).await;
         }
     }
 
-    async fn _run_quorum(
-        &self,
-        state: &mut ManagerState,
-        requester: QuorumMember,
-        timeout: Duration,
-    ) -> Result<(), Status> {
-        if (state.participants.len() as u64) < self.world_size {
-            return Ok(());
-        }
-
-        state.participants.clear();
+    async fn _run_quorum(&self, requester: QuorumMember, timeout: Duration) -> Result<(), Status> {
         info_with_replica!(self.replica_id, "All workers joined - starting quorum");
 
-        // TODO: don't hold the lock during quorum
-
-        let mut client = self.lighthouse_client.clone();
+        let mut client = {
+            let state = self.state.lock().await;
+            state.lighthouse_client.clone()
+        };
 
         let mut lighthouse_request = tonic::Request::new(LighthouseQuorumRequest {
             requester: Some(requester),
@@ -225,6 +229,27 @@ impl Manager {
             .map_err(|e| Status::from_error(e.into()))?;
 
         Ok(())
+    }
+
+    async fn create_lighthouse_client(&self) -> Result<(), Status> {
+        // Reset the client since the lighthouse server might have failed
+        // If this also fails, consider increasing `connect_timeout`.
+        let lighthouse_client =
+            lighthouse_client_new(self.lighthouse_addr.clone(), self.connect_timeout).await;
+
+        match lighthouse_client {
+            Ok(client) => {
+                let state = self.state.lock().await;
+                state.lighthouse_client = client;
+                return Ok(());
+            }
+            Err(e) => {
+                return Err(Status::internal(format!(
+                    "Failed to connect to lighthouse. error: {}",
+                    e.to_string(),
+                )));
+            }
+        }
     }
 }
 
@@ -275,7 +300,12 @@ impl ManagerService for Arc<Manager> {
             state.participants.insert(group_rank, member.clone());
             let rx = state.channel.subscribe();
 
-            self._run_quorum(&mut state, member, timeout).await?;
+            if (state.participants.len() as u64) == self.world_size {
+                state.participants.clear();
+                tokio::spawn(async move {
+                    self._run_quorum(member, timeout);
+                });
+            }
 
             rx
         };
