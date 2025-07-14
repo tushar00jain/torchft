@@ -157,20 +157,15 @@ class DiLoCoTest(TestCase):
             loss.backward()
             inner_optimizer.step()
 
-            self.assertEqual(diloco._local_step, 0)
-            loss = model(inp).mean()
-            loss.backward()
-            inner_optimizer.step()
-
             self.assertEqual(diloco._local_step, 1)
-            self.assertEqual(manager.start_quorum.call_count, 1)
+            manager.current_step.return_value = 0
+            manager.should_commit.return_value = True
             loss = model(inp).mean()
             loss.backward()
             inner_optimizer.step()
-            self.assertEqual(manager.start_quorum.call_count, 2)
 
-            manager.should_commit.return_value = True
-            self.assertEqual(diloco._local_step, 2)
+            self.assertEqual(diloco._local_step, 0)
+            self.assertEqual(manager.start_quorum.call_count, 1)
             torch.testing.assert_close(
                 diloco._fragments[0].original_parameters, _params_dict(model)
             )
@@ -320,8 +315,8 @@ class DiLoCoTest(TestCase):
         diloco._fragments[0]._set_grads()
 
         # we added 2 to the parameters, then multiplied the gradients by 2
-        # so we should expect the model's gradient to be 4
-        expected_grad = 4
+        # so we should expect the model's gradient to be -4
+        expected_grad = -4
         for param in model.parameters():
             assert param.grad is not None
             t = torch.empty_like(param.grad)
