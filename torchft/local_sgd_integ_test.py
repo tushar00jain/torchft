@@ -18,6 +18,7 @@ from torch import nn, optim
 from torch.distributed.pipelining import SplitPoint, pipeline
 from torch.distributed.tensor import DTensor, Replicate
 
+from torchft._test.diloco_trainer import DiLoCoTrainer, MultiMyModel
 from torchft._torchft import LighthouseServer
 from torchft.device_mesh import ft_init_device_mesh
 from torchft.local_sgd import DiLoCo, LocalSGD
