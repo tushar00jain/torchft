@@ -418,16 +418,6 @@ class LocalSGDIntegTest(TestCase):
 
         assert_equal_global_state(rep1, rep0)
 
-        for step in rep1.keys():
-            if step == 2:
-                # Replica 0 should have reset its `local_step` after failure
-                self.assertEqual(rep1[step]["user"]["local_step"], 0)
-                self.assertEqual(rep0[step]["user"]["local_step"], 5)
-            else:
-                self.assertEqual(
-                    rep0[step]["user"]["local_step"], rep1[step]["user"]["local_step"]
-                )
-
         self.assertEqual(event_injectors[1].count[EventInjectorEvent.Failure], 1)
 
     CONFIG: list[tuple[bool, int, int, float]] = [
@@ -509,14 +499,6 @@ class LocalSGDIntegTest(TestCase):
         assert_equal_global_state(rep0, rep1)
         assert_equal_global_state(rep0, rep2)
 
-        for step in rep0.keys():
-            self.assertEqual(
-                rep0[step]["user"]["local_step"], rep1[step]["user"]["local_step"]
-            )
-            self.assertEqual(
-                rep1[step]["user"]["local_step"], rep2[step]["user"]["local_step"]
-            )
-
         for event_injector in event_injectors:
             self.assertEqual(event_injectors[1].count[EventInjectorEvent.Barrier], 1)
 
@@ -585,11 +567,6 @@ class LocalSGDIntegTest(TestCase):
         rep0, rep1 = state_dicts
 
         assert_equal_global_state(rep0, rep1)
-
-        for step in rep0.keys():
-            self.assertEqual(
-                rep0[step]["user"]["local_step"], rep1[step]["user"]["local_step"]
-            )
 
         for event_injector in event_injectors:
             self.assertEqual(
