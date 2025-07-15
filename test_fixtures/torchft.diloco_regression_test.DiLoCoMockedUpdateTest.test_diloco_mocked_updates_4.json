@@ -1,0 +1,546 @@
+[
+  [
+    {
+      "history": {
+        "0": {
+          "layers.0.weight": [
+            [
+              1.0
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              1.0
+            ]
+          ]
+        },
+        "1": {
+          "layers.0.weight": [
+            [
+              -1.0
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -1.0
+            ]
+          ]
+        },
+        "2": {
+          "layers.0.weight": [
+            [
+              -3.0
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -3.0
+            ]
+          ]
+        },
+        "3": {
+          "layers.0.weight": [
+            [
+              -6.0
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -5.0
+            ]
+          ]
+        },
+        "4": {
+          "layers.0.weight": [
+            [
+              -8.0
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -7.0
+            ]
+          ]
+        },
+        "5": {
+          "layers.0.weight": [
+            [
+              -10.0
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -9.0
+            ]
+          ]
+        },
+        "6": {
+          "layers.0.weight": [
+            [
+              -12.0
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -15.0
+            ]
+          ]
+        },
+        "7": {
+          "layers.0.weight": [
+            [
+              -14.0
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -17.0
+            ]
+          ]
+        },
+        "8": {
+          "layers.0.weight": [
+            [
+              -16.0
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -19.0
+            ]
+          ]
+        },
+        "9": {
+          "layers.0.weight": [
+            [
+              -21.5
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -21.0
+            ]
+          ]
+        },
+        "10": {
+          "layers.0.weight": [
+            [
+              -23.5
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -23.0
+            ]
+          ]
+        },
+        "11": {
+          "layers.0.weight": [
+            [
+              -25.5
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -25.0
+            ]
+          ]
+        },
+        "12": {
+          "layers.0.weight": [
+            [
+              -27.5
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -29.0
+            ]
+          ]
+        },
+        "13": {
+          "layers.0.weight": [
+            [
+              -29.5
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -31.0
+            ]
+          ]
+        },
+        "14": {
+          "layers.0.weight": [
+            [
+              -31.5
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -33.0
+            ]
+          ]
+        },
+        "15": {
+          "layers.0.weight": [
+            [
+              -35.75
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -35.0
+            ]
+          ]
+        }
+      },
+      "global_parameter_history": {
+        "0": {
+          "layers.0.weight": [
+            [
+              1.0
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              1.0
+            ]
+          ]
+        },
+        "3": {
+          "layers.0.weight": [
+            [
+              -7.0
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              1.0
+            ]
+          ]
+        },
+        "6": {
+          "layers.0.weight": [
+            [
+              -7.0
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -19.0
+            ]
+          ]
+        },
+        "9": {
+          "layers.0.weight": [
+            [
+              -25.0
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -19.0
+            ]
+          ]
+        },
+        "12": {
+          "layers.0.weight": [
+            [
+              -25.0
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -31.0
+            ]
+          ]
+        },
+        "15": {
+          "layers.0.weight": [
+            [
+              -38.0
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -31.0
+            ]
+          ]
+        }
+      }
+    }
+  ],
+  [
+    {
+      "history": {
+        "0": {
+          "layers.0.weight": [
+            [
+              1.0
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              1.0
+            ]
+          ]
+        },
+        "1": {
+          "layers.0.weight": [
+            [
+              -1.0
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -1.0
+            ]
+          ]
+        },
+        "2": {
+          "layers.0.weight": [
+            [
+              -3.0
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -3.0
+            ]
+          ]
+        },
+        "3": {
+          "layers.0.weight": [
+            [
+              -6.0
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -5.0
+            ]
+          ]
+        },
+        "4": {
+          "layers.0.weight": [
+            [
+              -8.0
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -7.0
+            ]
+          ]
+        },
+        "5": {
+          "layers.0.weight": [
+            [
+              -10.0
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -9.0
+            ]
+          ]
+        },
+        "6": {
+          "layers.0.weight": [
+            [
+              -12.0
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -15.0
+            ]
+          ]
+        },
+        "7": {
+          "layers.0.weight": [
+            [
+              -14.0
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -17.0
+            ]
+          ]
+        },
+        "8": {
+          "layers.0.weight": [
+            [
+              -16.0
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -19.0
+            ]
+          ]
+        },
+        "9": {
+          "layers.0.weight": [
+            [
+              -21.5
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -21.0
+            ]
+          ]
+        },
+        "10": {
+          "layers.0.weight": [
+            [
+              -23.5
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -23.0
+            ]
+          ]
+        },
+        "11": {
+          "layers.0.weight": [
+            [
+              -25.5
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -25.0
+            ]
+          ]
+        },
+        "12": {
+          "layers.0.weight": [
+            [
+              -27.5
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -29.0
+            ]
+          ]
+        },
+        "13": {
+          "layers.0.weight": [
+            [
+              -29.5
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -31.0
+            ]
+          ]
+        },
+        "14": {
+          "layers.0.weight": [
+            [
+              -31.5
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -33.0
+            ]
+          ]
+        },
+        "15": {
+          "layers.0.weight": [
+            [
+              -35.75
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -35.0
+            ]
+          ]
+        }
+      },
+      "global_parameter_history": {
+        "0": {
+          "layers.0.weight": [
+            [
+              1.0
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              1.0
+            ]
+          ]
+        },
+        "3": {
+          "layers.0.weight": [
+            [
+              -7.0
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              1.0
+            ]
+          ]
+        },
+        "6": {
+          "layers.0.weight": [
+            [
+              -7.0
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -19.0
+            ]
+          ]
+        },
+        "9": {
+          "layers.0.weight": [
+            [
+              -25.0
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -19.0
+            ]
+          ]
+        },
+        "12": {
+          "layers.0.weight": [
+            [
+              -25.0
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -31.0
+            ]
+          ]
+        },
+        "15": {
+          "layers.0.weight": [
+            [
+              -38.0
+            ]
+          ],
+          "layers.1.weight": [
+            [
+              -31.0
+            ]
+          ]
+        }
+      }
+    }
+  ]
+]
