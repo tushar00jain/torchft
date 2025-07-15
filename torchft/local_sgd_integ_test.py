@@ -34,7 +34,6 @@ from torchft.process_group import (
     ProcessGroupBabyNCCL,
     ProcessGroupGloo,
 )
-from torchft.test.diloco_trainer import DiLoCoTrainer, MultiMyModel
 
 logger: logging.Logger = logging.getLogger(__name__)
 
