@@ -318,7 +318,20 @@ class _StreamingDiLoCoFragment:
         Merges the local and global parameters.
         """
         for name, p in self._model_fragment.named_parameters():
-            p.data.lerp_(self._local_parameters[name], self._fragment_update_alpha)
+            # we averaged the local version of the tensor so need to copy it back as a DTensor
+            if isinstance(p, DTensor):
+                p.data.lerp_(
+                    DTensor.from_local(
+                        self._local_parameters[name],
+                        p.device_mesh,
+                        p.placements,
+                        shape=p.shape,
+                        stride=p.stride(),
+                    ),
+                    self._fragment_update_alpha,
+                )
+            else:
+                p.data.lerp_(self._local_parameters[name], self._fragment_update_alpha)
 
     @torch.profiler.record_function("torchft::local_sgd::wait")
     def wait(self) -> None:
