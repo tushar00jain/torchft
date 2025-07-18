@@ -169,6 +169,7 @@ class _StreamingDiLoCoFragment:
         self,
         manager: Manager,
         model_fragment: nn.Module,
+        fragment_id: int,
         fragment_sync_offset: int,
         inner_optimizer: optim.Optimizer,
         outer_optimizer: optim.Optimizer,
@@ -184,6 +185,7 @@ class _StreamingDiLoCoFragment:
         if fragment_sync_offset > sync_every:
             raise ValueError("Fragment must be synced once before `sync_every` steps")
 
+        self._fragment_id = fragment_id
         self._manager = manager
         self._model_fragment = model_fragment
         self._fragment_sync_offset = fragment_sync_offset
@@ -234,6 +236,34 @@ class _StreamingDiLoCoFragment:
             ):
                 t = t.pin_memory()
             self.original_parameters[name] = t
+
+    def register_state_dict_fn(self) -> None:
+        """
+        Register state dict functions for this fragment with the manager.
+        This allows for saving and loading the original_parameters during checkpointing and recovery.
+
+        Args:
+            manager: The manager to register with
+            fragment_id: Optional identifier for this fragment, used in the key
+        """
+        # Generate a unique key for this fragment based on the model fragment's name or provided ID
+        fragment_key = f"StreamingDiLoCoFragment_{self._fragment_id}"
+
+        # Define load function for this fragment
+        def load_fn(state_dict: Dict[str, torch.Tensor]) -> None:
+            for name, param in state_dict.items():
+                if name in self.original_parameters:
+                    self.original_parameters[name].copy_(param)
+
+        # Define save function for this fragment
+        def save_fn() -> Dict[str, torch.Tensor]:
+            return {
+                name: extract_local_tensor(param)
+                for name, param in self.original_parameters.items()
+            }
+
+        # Register the functions with the manager
+        self._manager.register_state_dict_fn(fragment_key, load_fn, save_fn)
 
     @torch.profiler.record_function("torchft::local_sgd::save_parameters")
     def save_parameters(self) -> None:
@@ -596,6 +626,7 @@ class DiLoCo:
             _StreamingDiLoCoFragment(
                 manager,
                 model_fragment,
+                i,
                 math.floor((sync_every / len(model_fragments)) * (i + 1)),
                 inner_optimizer,
                 (
@@ -621,6 +652,11 @@ class DiLoCo:
 
         # Need to copy the parameters to the host to be safe if we are on the first step.
         self._save_parameters()
+        self._register_state_dict_fn()
+
+    def _register_state_dict_fn(self) -> None:
+        for fragment in self._fragments:
+            fragment.register_state_dict_fn()
 
     def _save_parameters(self) -> None:
         for fragment in self._fragments:

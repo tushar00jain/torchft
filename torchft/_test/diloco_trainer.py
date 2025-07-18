@@ -226,18 +226,6 @@ class DiLoCoTrainer:
         self.model.load_state_dict(state_dict["model"])
         self.model.to(self.device)
 
-        # Load original parameters for each fragment
-        for i, fragment in enumerate(cast(DiLoCo, self.diloco)._fragments):
-            fragment.original_parameters = cast(
-                Dict[str, torch.Tensor], state_dict["original_params"][f"{i}"]
-            )
-
-        for fragment in cast(DiLoCo, self.diloco)._fragments:
-            for name in fragment.original_parameters.keys():
-                fragment.original_parameters[name] = fragment.original_parameters[
-                    name
-                ].to(self.device)
-
         self.inner_optimizer.load_state_dict(state_dict["inner_optim"])
         for i, optimizer in enumerate(self.outer_optimizers):
             optimizer.load_state_dict(
@@ -255,10 +243,6 @@ class DiLoCoTrainer:
 
         return {
             "model": self.model.state_dict(),
-            "original_params": {
-                f"{i}": fragment.original_parameters
-                for i, fragment in enumerate(cast(DiLoCo, self.diloco)._fragments)
-            },
             "inner_optim": self.inner_optimizer.state_dict(),
             "outer_optim": {
                 f"{i}": optimizer.state_dict()

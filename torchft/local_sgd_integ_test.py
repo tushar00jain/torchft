@@ -130,6 +130,7 @@ def diloco_train_loop(
 
 
 def assert_equal_global_state(
+    n_fragments: int,
     rep0: dict[str, dict[str, dict[str, dict[str, object]]]],
     rep1: dict[str, dict[str, dict[str, dict[str, object]]]],
 ) -> None:
@@ -137,11 +138,12 @@ def assert_equal_global_state(
     Asserts that the global state of the two replicas are equal
     """
     for step in rep0.keys():
-        torch.testing.assert_close(
-            rep1[step]["user"]["default"]["original_params"],
-            rep0[step]["user"]["default"]["original_params"],
-            check_device=False,
-        )
+        for i in range(n_fragments):
+            torch.testing.assert_close(
+                rep1[step]["user"][f"StreamingDiLoCoFragment_{i}"],
+                rep0[step]["user"][f"StreamingDiLoCoFragment_{i}"],
+                check_device=False,
+            )
         # Check all outer optimizers
         for i in range(
             len(
@@ -272,7 +274,7 @@ class LocalSGDIntegTest(TestCase):
         lighthouse.shutdown()
 
         rep0, rep1 = state_dicts
-        assert_equal_global_state(rep1, rep0)
+        assert_equal_global_state(1, rep1, rep0)
 
     # pyre-fixme[56]: Pyre was not able to infer the type of argument
     @skipIf(sys.platform == "darwin", "not reliable on mac")
@@ -348,7 +350,7 @@ class LocalSGDIntegTest(TestCase):
         #       of step Manager Step 2
         #
         # Outer optimizer and global model should be the same
-        assert_equal_global_state(rep1, rep0)
+        assert_equal_global_state(1, rep1, rep0)
 
         self.assertEqual(event_injectors[1].count[EventInjectorEvent.Failure], 1)
 
@@ -416,7 +418,7 @@ class LocalSGDIntegTest(TestCase):
 
         rep0, rep1 = state_dicts
 
-        assert_equal_global_state(rep1, rep0)
+        assert_equal_global_state(2, rep1, rep0)
 
         self.assertEqual(event_injectors[1].count[EventInjectorEvent.Failure], 1)
 
@@ -496,8 +498,8 @@ class LocalSGDIntegTest(TestCase):
 
         rep0, rep1, rep2 = state_dicts
 
-        assert_equal_global_state(rep0, rep1)
-        assert_equal_global_state(rep0, rep2)
+        assert_equal_global_state(n_fragments, rep0, rep1)
+        assert_equal_global_state(n_fragments, rep0, rep2)
 
         for event_injector in event_injectors:
             self.assertEqual(event_injectors[1].count[EventInjectorEvent.Barrier], 1)
@@ -566,7 +568,7 @@ class LocalSGDIntegTest(TestCase):
 
         rep0, rep1 = state_dicts
 
-        assert_equal_global_state(rep0, rep1)
+        assert_equal_global_state(n_fragments, rep0, rep1)
 
         for event_injector in event_injectors:
             self.assertEqual(
