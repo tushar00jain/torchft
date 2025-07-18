@@ -19,8 +19,7 @@ from torchft._torchft import LighthouseServer
 from torchft.device_mesh import ft_init_device_mesh
 from torchft.local_sgd import DiLoCo
 from torchft.manager import Manager
-from torchft.manager_integ_test import EventInjector, Runner
-from torchft.process_group import FakeProcessGroupWrapper, ProcessGroupGloo
+from torchft.manager_integ_test import EventInjector, EventInjectorEvent, Runner
 
 logging.basicConfig(level=logging.INFO)
 logger: logging.Logger = logging.getLogger(__name__)
@@ -197,22 +196,20 @@ class MockDiLoCoTrainer(DiLoCoTrainer):
                 parameter_history["history"][local_step] = step_params
 
                 manager_curr_step = self.manager.current_step()
+
+                if manager_curr_step == 5:
+                    break
+
                 if manager_curr_step not in manager_steps:
                     # Store the manager state dict, converting to the right type
                     state_dict = copy.deepcopy(self.manager._manager_state_dict())
                     user_state_dict = cast(dict[str, object], state_dict["user"])
-                    default_state_dict = cast(
-                        dict[str, object], user_state_dict["default"]
-                    )
-                    original_params = cast(
-                        dict[str, torch.Tensor], default_state_dict["original_params"]
-                    )
                     parameter_history["global_parameter_history"][local_step] = {}
 
-                    for fragment, value in original_params.items():
-                        value = cast(dict[str, torch.Tensor], value)
+                    for i in range(self.n_fragments):
+                        value = cast(dict[str, torch.Tensor], user_state_dict[f"StreamingDiLoCoFragment_{i}"])
                         parameter_history["global_parameter_history"][local_step][
-                            f"layers.{fragment}.weight"
+                            f"layers.{i}.weight"
                         ] = (value["weight"].data.clone().detach().cpu().tolist())
 
                     manager_steps.add(manager_curr_step)
@@ -227,9 +224,6 @@ class MockDiLoCoTrainer(DiLoCoTrainer):
 
                 # Step with deterministic updates
                 self.inner_optimizer.step()
-
-                if local_step == 15:
-                    break
 
                 self.runner.event_injector.check(self.rank, self.manager.current_step())
                 local_step += 1
@@ -371,6 +365,127 @@ class DiLoCoMockedUpdateTest(TestCase):
                 fragment_sync_delay,
                 fragment_update_alpha,
             )
+
+    @parameterized.expand(
+        [
+            # Format: (use_cuda, n_fragments, fragment_sync_delay, fragment_update_alpha)
+            (False, 2, 0, 0),  # 2 fragments, no delay, 0% mixing
+        ]
+    )
+    def test_diloco_mocked_failure_recovery(
+        self,
+        use_cuda: bool,
+        n_fragments: int,
+        fragment_sync_delay: int,
+        fragment_update_alpha: float,
+    ) -> None:
+        """
+        Test that validates DiLoCo can recover from a replica failure.
+        One replica is set to fail at step 2, and the test verifies that
+        the system recovers and parameters are correctly synchronized after recovery.
+        """
+        # Skip the test if use_cuda is True and there are not enough GPUs
+        if use_cuda and torch.cuda.device_count() < 2:
+            self.skipTest("Not enough GPUs for CUDA test")
+
+        lighthouse = LighthouseServer(bind="[::]:0", min_replicas=2)
+        sync_every = 6
+        num_replicas = 2
+        futures = []
+
+        # Create event injectors - make the second replica fail at step 2
+        event_injectors = [
+            EventInjector(),  # First replica runs normally
+            EventInjector().fail_at(0, 2),  # Second replica fails at step 2
+        ]
+
+        torch.manual_seed(42)
+        # Initialize the model with the specified number of fragments
+        temp_model = MockModel(in_dim=1, out_dim=1, n_layers=n_fragments)
+        model_state_dict = temp_model.state_dict()
+
+        with ThreadPoolExecutor(max_workers=num_replicas) as executor:
+            for replica_id, event_injector in zip(range(num_replicas), event_injectors):
+                runner = Runner(
+                    replica_id=replica_id,
+                    num_replicas=num_replicas,
+                    lighthouse_address=lighthouse.address(),
+                    event_injector=event_injector,
+                    train_loop=mock_diloco_train_loop,
+                    use_cuda=use_cuda,
+                    train_loop_args={
+                        "n_fragments": n_fragments,
+                        "model_state_dict": model_state_dict,
+                        "diloco_args": {
+                            "sync_every": sync_every,
+                            "fragment_sync_delay": fragment_sync_delay,
+                            "fragment_update_alpha": fragment_update_alpha,
+                        },
+                    },
+                )
+                futures.append(executor.submit(runner.run_replica))
+
+            # Wait for all futures to complete
+            for fut in as_completed(futures):
+                continue
+
+            results = []
+            for fut in futures:
+                try:
+                    results.append(fut.result())
+                except Exception as e:
+                    print(f"Error in replica: {e}")
+                    raise
+
+        lighthouse.shutdown()
+
+        # Handle fixture reading/writing
+        fixture_data = handle_fixture(f"{self.id()}.json", results)
+
+        # If fixture exists, compare with it
+        if fixture_data is not None:
+            for replica_idx, (fixture_history, current_history) in enumerate(
+                zip(fixture_data, results)
+            ):
+                fixture_history = fixture_history[0]["history"]
+                current_history = current_history[0]["history"]
+                for step, fixture_params in fixture_history.items():
+                    for param_name, fixture_values in fixture_params.items():
+                        current_values = current_history[int(step)][param_name]
+                        # Convert to tensors for comparison with tolerance
+                        fixture_tensor = torch.tensor(fixture_values)
+                        current_tensor = torch.tensor(current_values)
+                        self.assertTrue(
+                            torch.allclose(
+                                fixture_tensor, current_tensor, rtol=1e-5, atol=1e-5
+                            ),
+                            f"{fixture_tensor} is not the same as {current_tensor} for {param_name} at step {step}",
+                        )
+        else:
+            # Verify that the failure was injected
+            self.assertEqual(
+                event_injectors[1].count[EventInjectorEvent.Failure], 1,
+                "Expected one failure event to be injected",
+            )
+
+            # Verify that both replicas have the same global parameters at the end
+            # Extract the global parameter history from both replicas
+            rep0_global = results[0][0]["global_parameter_history"]
+            rep1_global = results[1][0]["global_parameter_history"]
+
+            # Get the last step in both histories
+            last_step_rep0 = max(int(step) for step in rep0_global.keys())
+            last_step_rep1 = max(int(step) for step in rep1_global.keys())
+
+            # Compare the global parameters at the last step
+            for param_name in rep0_global[last_step_rep0].keys():
+                rep0_param = torch.tensor(rep0_global[last_step_rep0][param_name])
+                rep1_param = torch.tensor(rep1_global[last_step_rep1][param_name])
+
+                self.assertTrue(
+                    torch.allclose(rep0_param, rep1_param, rtol=1e-5, atol=1e-5),
+                    f"Global parameters don't match at the end: {rep0_param} vs {rep1_param} for {param_name}"
+                )
 
     def _validate_parameter_updates(
         self,
