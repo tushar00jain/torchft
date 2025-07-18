@@ -204,18 +204,12 @@ class MockDiLoCoTrainer(DiLoCoTrainer):
                     # Store the manager state dict, converting to the right type
                     state_dict = copy.deepcopy(self.manager._manager_state_dict())
                     user_state_dict = cast(dict[str, object], state_dict["user"])
-                    default_state_dict = cast(
-                        dict[str, object], user_state_dict["default"]
-                    )
-                    original_params = cast(
-                        dict[str, torch.Tensor], default_state_dict["original_params"]
-                    )
                     parameter_history["global_parameter_history"][local_step] = {}
 
-                    for fragment, value in original_params.items():
-                        value = cast(dict[str, torch.Tensor], value)
+                    for i in range(self.n_fragments):
+                        value = cast(dict[str, torch.Tensor], user_state_dict[f"StreamingDiLoCoFragment_{i}"])
                         parameter_history["global_parameter_history"][local_step][
-                            f"layers.{fragment}.weight"
+                            f"layers.{i}.weight"
                         ] = (value["weight"].data.clone().detach().cpu().tolist())
 
                     manager_steps.add(manager_curr_step)
