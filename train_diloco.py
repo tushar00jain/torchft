@@ -14,6 +14,7 @@ os.environ["CUDA_VISIBLE_DEVICES"] = str(REPLICA_GROUP_ID % 4)
 os.environ["NCCL_HOSTID"] = str(REPLICA_GROUP_ID)
 
 USE_STREAMING = os.getenv("USE_STREAMING", "False") == "True"
+USE_NCCL = os.getenv("USE_NCCL", "False") == "True"
 
 import torch
 import torch.nn.functional as F
@@ -60,19 +61,19 @@ def main() -> None:
             "outer_optim": outer_optimizer.state_dict(),
         }
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     pg = (
         ProcessGroupNCCL(
             timeout=timedelta(seconds=10),
         )
-        if torch.cuda.is_available()
+        if torch.cuda.is_available() and USE_NCCL
         else ProcessGroupGloo(timeout=timedelta(seconds=5))
     )
 
     transport = PGTransport(
         pg,
         timeout=timedelta(seconds=10),
-        device=("cuda" if torch.cuda.is_available() else "cpu"),
+        device=device,
     )
 
     manager = Manager(
