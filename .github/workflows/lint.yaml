@@ -27,6 +27,7 @@ jobs:
           lintrunner init
 
           pip install .[dev] -v
+          pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
       - name: Run lintrunner
         run: |
           set -eux
