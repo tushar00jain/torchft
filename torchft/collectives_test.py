@@ -94,7 +94,7 @@ else:
                     )
                 ]
 
-                fut = allreduce_quantized(tensors, reduce_op, pg)
+                _, fut = allreduce_quantized(tensors, reduce_op, pg)
                 fut.wait()
 
                 work = pg.allreduce([expected], reduce_op)

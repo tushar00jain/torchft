@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, create_autospec
 import torch
 from parameterized import parameterized
 from torch import Tensor, nn, optim
+from torch.distributed.distributed_c10d import Work
 from torch.distributed.tensor import DTensor
 
 from torchft.local_sgd import DiLoCo, LocalSGD, extract_local_tensor
@@ -25,6 +26,14 @@ def create_manager() -> MagicMock:
     manager = create_autospec(Manager)
 
     manager.errored.return_value = None
+
+    # Configure allreduce to return a tuple of (None, Future)
+    def mock_allreduce(tensor, should_quantize=False):
+        fut = torch.futures.Future()
+        fut.set_result(tensor)
+        return (None, fut)
+
+    manager.allreduce.side_effect = mock_allreduce
 
     return manager
 
@@ -242,11 +251,11 @@ class DiLoCoTest(TestCase):
         # Define fake allreduce: multiplies buffer by 2
         def fake_allreduce(
             tensor: Tensor, should_quantize: bool
-        ) -> torch.futures.Future[Tensor]:
+        ) -> tuple[Work | None, torch.futures.Future[Tensor]]:
             tensor.mul_(2)
             fut = torch.futures.Future()  # pyre-fixme[29]: not a function
             fut.set_result(tensor)
-            return fut
+            return (None, fut)
 
         manager.allreduce.side_effect = fake_allreduce
 
@@ -286,11 +295,11 @@ class DiLoCoTest(TestCase):
         # Define fake allreduce: multiplies buffer by 2
         def fake_allreduce(
             tensor: Tensor, should_quantize: bool
-        ) -> torch.futures.Future[Tensor]:
+        ) -> tuple[Work | None, torch.futures.Future[Tensor]]:
             tensor.mul_(2)
             fut = torch.futures.Future()  # pyre-fixme[29]: not a function
             fut.set_result(tensor)
-            return fut
+            return (None, fut)
 
         manager.allreduce.side_effect = fake_allreduce
 
