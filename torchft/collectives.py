@@ -18,6 +18,7 @@ from torch.distributed.distributed_c10d import (
     AllreduceOptions,
     AllToAllOptions,
     ReduceScatterOptions,
+    Work,
 )
 from torch.futures import Future
 
@@ -288,7 +289,7 @@ def allreduce_quantized(
     opts: AllreduceOptions | ReduceOp,
     process_group: "ProcessGroup",
     sync_stream: cuda.Stream | None = None,
-) -> Future[list[torch.Tensor]]:
+) -> tuple[Work, Future[list[torch.Tensor]]]:
     """
     Performs a quantized all-reduce operation on a list of tensors.
 
@@ -379,7 +380,6 @@ def allreduce_quantized(
             [torch.split(quantized_tensors_out.view(world_size, -1), 1)[rank]],
             _to_allgather_options(allreduce_opts),
         )
-        work.wait()
         fut = work.get_future()
 
         def callback(fut: Future[list[torch.Tensor]]) -> list[torch.Tensor]:
@@ -392,4 +392,4 @@ def allreduce_quantized(
                 return tensors
 
         fut = fut.then(callback)
-        return fut
+        return (work, fut)
