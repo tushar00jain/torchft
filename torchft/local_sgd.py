@@ -18,6 +18,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Type
 import torch
 import torch.distributed as dist
 from torch import nn, optim
+from torch.distributed.distributed_c10d import Work
 from torch.distributed.tensor import DTensor
 from torch.nn.parameter import Parameter
 from torch.optim.optimizer import Optimizer
@@ -154,7 +155,8 @@ class LocalSGD:
         for p in self._model.parameters():
             # Create a new tensor to store the averaged parameter
             avg_param = extract_local_tensor(p)
-            works.append(self._manager.allreduce(avg_param))
+            work, fut = self._manager.allreduce(avg_param)
+            works.append(fut)
             averaged_parameters.append(avg_param)
         for work in works:
             work.wait()
@@ -201,6 +203,7 @@ class _StreamingDiLoCoFragment:
 
         # Stores pending all reduce
         self._allreduce_futures: list[torch.futures.Future[torch.Tensor]] = []
+        self._allreduce_work: list[Work] = []
         self._stream: Optional[torch.cuda.Stream] = (
             torch.cuda.Stream() if torch.cuda.is_available() else None
         )
@@ -377,6 +380,7 @@ class _StreamingDiLoCoFragment:
             self._stop_event = None
 
         self._allreduce_futures = []
+        self._allreduce_work = []
 
     @torch.profiler.record_function("torchft::local_sgd::prepare_sync")
     def prepare_sync(self) -> None:
@@ -399,13 +403,6 @@ class _StreamingDiLoCoFragment:
         ):
             self._average_grads()
 
-            for work in self._allreduce_futures:
-                work.wait()
-
-            if self._stream is not None:
-                self._stop_event = torch.cuda.Event()
-                self._stop_event.record()
-
     @torch.profiler.record_function("torchft::local_sgd::perform_sync")
     def perform_sync(self) -> bool:
         """
@@ -414,6 +411,21 @@ class _StreamingDiLoCoFragment:
         """
         # Waiting for an allreduce before it has been sent is currently not supported.
         assert len(self._allreduce_futures) > 0
+
+        with (
+            torch.cuda.stream(self._stream)
+            if self._stream is not None
+            else nullcontext()
+        ):
+            for work in self._allreduce_work:
+                work.wait()
+
+            for fut in self._allreduce_futures:
+                fut.wait()
+
+            if self._stream is not None:
+                self._stop_event = torch.cuda.Event()
+                self._stop_event.record()
 
         self.wait()
 
@@ -464,10 +476,13 @@ class _StreamingDiLoCoFragment:
         """Performs allreduce on each gradient tensor separately (original method)."""
         for name, p in self._model_fragment.named_parameters():
             # Perform allreduce on the pseudogradients
-            work = self._manager.allreduce(
+            (work, fut) = self._manager.allreduce(
                 self._grads[name], should_quantize=self.should_quantize
             )
-            self._allreduce_futures.append(work)
+            self._allreduce_futures.append(fut)
+
+            if work is not None:
+                self._allreduce_work.append(work)
 
     def _bucketize_and_allreduce(
         self,
@@ -508,7 +523,7 @@ class _StreamingDiLoCoFragment:
                 pack_offset += numel
                 flat_index += 1
 
-            work = self._manager.allreduce(
+            work, fut = self._manager.allreduce(
                 flat_buffer, should_quantize=self.should_quantize
             )
 
@@ -517,8 +532,11 @@ class _StreamingDiLoCoFragment:
                 for t, pack_offset, numel in bucket_tensors:
                     t.copy_(flat_buffer[pack_offset : pack_offset + numel].view_as(t))
 
-            work = work.then(callback)
-            self._allreduce_futures.append(work)
+            fut = fut.then(callback)
+
+            self._allreduce_futures.append(fut)
+            if work is not None:
+                self._allreduce_work.append(work)
 
             offset += chunk_size
 
