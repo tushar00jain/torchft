@@ -39,14 +39,16 @@ class TestDDP(TestCase):
 
         call_count = 0
 
-        def allreduce(tensor: torch.Tensor) -> Future[torch.Tensor]:
+        def allreduce(
+            tensor: torch.Tensor,
+        ) -> tuple[torch.Tensor, Future[torch.Tensor]]:
             nonlocal call_count
 
             call_count += 1
 
             fut = Future()  # pyre-fixme[29]: not a function
             fut.set_result(tensor)
-            return fut
+            return tensor, fut
 
         manager.allreduce = allreduce
 

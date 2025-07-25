@@ -26,6 +26,7 @@ and Hybrid FSDP.
 """
 
 import concurrent.futures
+import copy
 import logging
 import os
 import socket
@@ -39,7 +40,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, TypeVar, 
 
 import torch
 from torch.distributed import ReduceOp, TCPStore
-from torch.distributed.distributed_c10d import AllreduceOptions, ReduceOp
+from torch.distributed.distributed_c10d import AllreduceOptions, ReduceOp, Work
 
 from torchft._torchft import ManagerClient, ManagerServer
 from torchft.checkpointing import CheckpointTransport, HTTPTransport
@@ -345,7 +346,7 @@ class Manager:
     @torch.profiler.record_function("torchft::manager::allreduce")
     def allreduce(
         self, tensor: torch.Tensor, should_quantize: bool = False
-    ) -> torch.futures.Future[torch.Tensor]:
+    ) -> tuple[Work | None, torch.futures.Future[torch.Tensor]]:
         """
         Fault tolerant allreduce the tensor and return a Future that will be completed when
         the tensor is ready.
@@ -367,7 +368,7 @@ class Manager:
         if self.errored():
             fut = torch.futures.Future()  # pyre-fixme[29]: not a function
             fut.set_result(tensor)
-            return fut
+            return (None, fut)
 
         self.wait_quorum()
         num_participants: int = self.num_participants()
@@ -380,12 +381,11 @@ class Manager:
             # Run the allreduce async and save the work object so we can wait on
             # it later.
             if should_quantize and IS_TRITON_AVAILABLE:
-                fut = allreduce_quantized(
+                (work, fut) = allreduce_quantized(
                     [tensor], ReduceOp.SUM, self._pg, torch.cuda.current_stream()
                 )
             else:
                 work = self._pg.allreduce([tensor], ReduceOp.SUM)
-                work.wait()
                 fut = work.get_future()
 
             stream: Optional[torch.cuda.Stream] = (
@@ -403,6 +403,7 @@ class Manager:
                 # change the stream to avoid making the callback stream
                 # dependent on process group stream running the allreduce
                 with torch.cuda.stream(stream) if stream is not None else nullcontext():
+                    fut.wait()
                     fut.value()
                     tensor /= num_participants
 
@@ -411,7 +412,7 @@ class Manager:
             fut = fut.then(callback)
 
             fut = self.wrap_future(fut, tensor)
-            return fut
+            return (work, fut)
 
         except Exception as e:
             self._logger.exception(
@@ -421,7 +422,7 @@ class Manager:
 
             fut = torch.futures.Future()  # pyre-fixme[29]: not a function
             fut.set_result(tensor)
-            return fut
+            return (None, fut)
 
     def report_error(self, e: Exception) -> None:
         """
@@ -646,7 +647,7 @@ class Manager:
                             self._checkpoint_transport.send_checkpoint(
                                 dst_ranks=quorum.recover_dst_replica_ranks,
                                 step=max_step,
-                                state_dict=self._manager_state_dict(),
+                                state_dict=copy.deepcopy(self._manager_state_dict()),
                                 timeout=self._timeout,
                             )
 
