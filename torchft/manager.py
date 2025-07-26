@@ -397,12 +397,13 @@ class Manager:
             def callback(
                 fut: torch.futures.Future[List[torch.Tensor]],
             ) -> torch.Tensor:
-                nonlocal tensor, stream, num_participants
+                nonlocal tensor, stream, num_participants, work
 
                 # change the stream to avoid making the callback stream
                 # dependent on process group stream running the allreduce
                 with torch.cuda.stream(stream) if stream is not None else nullcontext():
                     # Setup stream dependency
+                    work.wait()
                     fut.wait()
                     fut.value()
                     tensor /= num_participants
