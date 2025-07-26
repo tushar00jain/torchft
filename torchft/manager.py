@@ -385,7 +385,7 @@ class Manager:
                 )
             else:
                 work = self._pg.allreduce([tensor], ReduceOp.SUM)
-                work.wait()
+                work.block_current_stream()
 
             fut = work.get_future()
 
