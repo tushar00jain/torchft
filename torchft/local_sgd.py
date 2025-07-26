@@ -85,6 +85,9 @@ class LocalSGD:
         self._hooks: List[RemovableHandle] = []
 
     def __enter__(self) -> "LocalSGD":
+        self._hooks.append(
+            self._local_optimizer.register_step_pre_hook(self._step_pre_hook)
+        )
         # Add optimizer hook which increments the local step counter and syncs if necessary
         self._hooks.append(
             self._local_optimizer.register_step_post_hook(self._step_post_hook)
@@ -105,12 +108,18 @@ class LocalSGD:
 
         return False  # Propagate exceptions
 
+    def _step_pre_hook(self, _optim: optim.Optimizer, _args: Tuple[Any, ...], _kwargs: Dict[str, Any]) -> None:
+        # The checkpoint may transfer model parameters, so we need to make access to it thread safe
+        self._manager._checkpoint_transport.disallow_checkpoint()
+
     def _step_post_hook(
         self, _optim: optim.Optimizer, _args: Tuple[Any, ...], _kwargs: Dict[str, Any]
     ) -> None:
         """
         This hook is registered on the optimizer and is called after the optimizer step.
         """
+        self._manager._checkpoint_transport.allow_checkpoint()
+
         self._local_step += 1
         if self._local_step >= self._sync_every:
             self.sync()
