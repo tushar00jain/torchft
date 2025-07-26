@@ -403,6 +403,8 @@ class Manager:
                 # change the stream to avoid making the callback stream
                 # dependent on process group stream running the allreduce
                 with torch.cuda.stream(stream) if stream is not None else nullcontext():
+                    # Setup stream dependency
+                    fut.wait()
                     fut.value()
                     tensor /= num_participants
 
