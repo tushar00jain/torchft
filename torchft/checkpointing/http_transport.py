@@ -16,6 +16,7 @@ from http.server import BaseHTTPRequestHandler
 from typing import Generator, List, Optional, TypeVar, cast
 
 import torch
+from torch.distributed.tensor import DTensor
 from torch.utils._pytree import TreeSpec, tree_flatten, tree_unflatten
 
 from torchft.checkpointing._rwlock import RWLock
@@ -278,7 +279,9 @@ def _to_cpu(values: List[T], pin_memory: bool) -> List[T]:
                 else:
                     out.append(v.cpu())
             else:
-                out.append(v)
+                out.append(v.clone())
+        elif isinstance(v, DTensor):
+            out.append(v.to_local().clone())
         else:
             out.append(v)
     return out
