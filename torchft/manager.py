@@ -312,6 +312,12 @@ class Manager:
         self._participating_replica_rank: Optional[int] = None
         self._participating_replica_world_size: int = 0
 
+    def allow_checkpoint(self):
+        self._checkpoint_transport.allow_checkpoint()
+
+    def disallow_checkpoint(self):
+        self._checkpoint_transport.disallow_checkpoint()
+
     def register_state_dict_fn(
         self,
         key: str,
