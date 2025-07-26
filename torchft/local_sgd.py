@@ -416,9 +416,7 @@ class _StreamingDiLoCoFragment:
             else nullcontext()
         ):
             for work in self._allreduce_work:
-                # TODO: Setup proper stream dependency on the future
-                # attached to this work
-                work.wait()
+                work.get_future().wait()
 
             if self._stream is not None:
                 self._stop_event = torch.cuda.Event()
@@ -522,6 +520,7 @@ class _StreamingDiLoCoFragment:
                 work = self._manager.allreduce(
                     flat_buffer, should_quantize=self.should_quantize
                 )
+                work.block_current_stream()
 
             def callback(fut: torch.futures.Future[torch.Tensor]) -> None:
                 with torch.cuda.stream(self._stream) if self._stream else nullcontext():
@@ -532,8 +531,6 @@ class _StreamingDiLoCoFragment:
                         )
 
             fut = work.get_future()
-            # TODO(tushar00jain): We need to call work.wait() here to ensure callback
-            # runs after work has been completed
             fut = fut.then(callback)
 
             self._allreduce_work.append(work)
