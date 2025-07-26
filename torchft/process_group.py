@@ -1072,7 +1072,7 @@ class _ManagedWork(Work):
                 if timeout is not None:
                     self._work.wait(timeout)
                 else:
-                    self._work.wait()
+                    self._work.block_current_stream()
         except Exception as e:
             self._manager.report_error(e)
 
