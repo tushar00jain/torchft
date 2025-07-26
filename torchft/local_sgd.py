@@ -388,7 +388,7 @@ class _StreamingDiLoCoFragment:
         """
         self._save_grads()
 
-        assert len(self._allreduce_futures) == 0
+        assert len(self._allreduce_work) == 0
 
         # Make sure tensors are available to `_stream`
         if self._stream is not None:
