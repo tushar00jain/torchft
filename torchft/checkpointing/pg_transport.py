@@ -194,6 +194,9 @@ class PGTransport(CheckpointTransport[T]):
     def disallow_checkpoint(self) -> None:
         pass
 
+    def allow_checkpoint(self, step: int) -> None:
+        pass
+
     def send_checkpoint(
         self, dst_ranks: list[int], step: int, state_dict: T, timeout: timedelta
     ) -> None:
