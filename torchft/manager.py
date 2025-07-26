@@ -385,8 +385,7 @@ class Manager:
                 )
             else:
                 work = self._pg.allreduce([tensor], ReduceOp.SUM)
-                # TODO(tushar00jain): Set up the stream dependency correctly so it doesn't block cpu when using gloo
-                work.wait()
+                work.block_current_stream()
 
             fut = work.get_future()
 
