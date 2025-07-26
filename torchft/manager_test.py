@@ -164,7 +164,7 @@ class TestManager(TestCase):
         self.assertEqual(manager.batches_committed(), 0)
 
         manager.start_quorum()
-        manager.allreduce(torch.tensor([1.0])).wait()
+        manager.allreduce(torch.tensor([1.0])).get_future().wait()
         self.assertTrue(manager.should_commit())
 
         self.assertEqual(manager._quorum_id, 123)
@@ -212,7 +212,7 @@ class TestManager(TestCase):
         self.assertEqual(manager.participating_rank(), None)
 
         manager.start_quorum()
-        manager.allreduce(torch.tensor([1.0])).wait()
+        manager.allreduce(torch.tensor([1.0])).get_future().wait()
         self.assertFalse(manager._healing)
         self.assertTrue(manager.is_participating())
         self.assertEqual(manager.num_participants(), 2)
@@ -330,7 +330,7 @@ class TestManager(TestCase):
         self.assertTrue(manager._healing)
 
         grad = torch.tensor([1.0])
-        manager.allreduce(grad).wait()
+        manager.allreduce(grad).get_future().wait()
         torch.testing.assert_close(grad, torch.zeros_like(grad))
         # don't commit since num_max < min_replica_size
         self.assertTrue(manager.should_commit())
@@ -373,17 +373,17 @@ class TestManager(TestCase):
         self.assertEqual(manager.current_step(), 0)
 
         manager.start_quorum()
-        manager.allreduce(torch.tensor([1.0])).wait()
+        manager.allreduce(torch.tensor([1.0])).get_future().wait()
         # pyre-ignore[16]: _pg is mocked
         self.assertEqual(manager._pg.allreduce.call_count, 1)
 
         # inject failure when work queued
         # pyre-ignore[16]: _pg is mocked
         manager._pg.allreduce.side_effect = RuntimeError("injected failure")
-        manager.allreduce(torch.tensor([1.0])).wait()
+        manager.allreduce(torch.tensor([1.0])).get_future().wait()
         self.assertTrue(manager._errored)
         # this should be skipped due to error
-        manager.allreduce(torch.tensor([1.0])).wait()
+        manager.allreduce(torch.tensor([1.0])).get_future().wait()
         self.assertEqual(manager._pg.allreduce.call_count, 2)
         # pyre-ignore[16]: _pg is mocked
         self.assertEqual(manager._pg.allreduce.return_value.get_future.call_count, 1)
@@ -404,7 +404,7 @@ class TestManager(TestCase):
         bad_fut = torch.futures.Future()  # pyre-fixme[29]: not a function
         bad_fut.set_exception(RuntimeError("injected failure"))
         manager._pg.allreduce.return_value.get_future.return_value = bad_fut
-        manager.allreduce(torch.tensor([1.0])).wait()
+        manager.allreduce(torch.tensor([1.0])).get_future().wait()
         self.assertEqual(manager._pg.allreduce.return_value.get_future.call_count, 2)
         self.assertTrue(manager._errored)
         self.assertFalse(manager.should_commit())
@@ -417,7 +417,7 @@ class TestManager(TestCase):
         quorum.max_step = 3
 
         manager.start_quorum()
-        manager.allreduce(torch.tensor([1.0])).wait()
+        manager.allreduce(torch.tensor([1.0])).get_future().wait()
         self.assertTrue(manager.should_commit())
 
     @patch("torchft.manager.ManagerClient", autospec=True)
@@ -482,7 +482,7 @@ class TestManager(TestCase):
             self.assertEqual(manager.batches_committed(), 0)
 
             manager.start_quorum()
-            manager.allreduce(torch.tensor([1.0])).wait()
+            manager.allreduce(torch.tensor([1.0])).get_future().wait()
 
             self.assertEqual(manager.is_participating(), rank != 2)
             self.assertEqual(manager.num_participants(), 2)
@@ -516,7 +516,7 @@ class TestManager(TestCase):
         self.assertEqual(manager.batches_committed(), 0)
 
         manager.start_quorum(allow_heal=False)
-        manager.allreduce(torch.tensor([1.0])).wait()
+        manager.allreduce(torch.tensor([1.0])).get_future().wait()
 
         self.assertFalse(manager.is_participating())
         self.assertEqual(manager.num_participants(), 2)
