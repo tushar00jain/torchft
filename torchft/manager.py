@@ -386,7 +386,7 @@ class Manager:
             else:
                 work = self._pg.allreduce([tensor], ReduceOp.SUM)
 
-            # TODO(tushar00jain): Set up the stream dependency correctly
+            work.block_current_stream()
             fut = work.get_future()
 
             stream: Optional[torch.cuda.Stream] = (
