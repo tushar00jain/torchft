@@ -416,7 +416,7 @@ class _StreamingDiLoCoFragment:
             else nullcontext()
         ):
             for work in self._allreduce_work:
-                work.wait()
+                work.get_future().wait()
 
             if self._stream is not None:
                 self._stop_event = torch.cuda.Event()
