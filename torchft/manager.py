@@ -39,13 +39,14 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, TypeVar, cast
 
 import torch
+import torch.distributed as dist
 from torch.distributed import ReduceOp, TCPStore
 from torch.distributed.distributed_c10d import AllreduceOptions, ReduceOp, Work
 
 from torchft._torchft import ManagerClient, ManagerServer
 from torchft.checkpointing import CheckpointTransport, HTTPTransport
 from torchft.futures import future_timeout
-from torchft.work import _DummyWork, _WorkWrapper
+from torchft.work import _DummyWork
 
 if TYPE_CHECKING:
     from torchft.process_group import ProcessGroup
@@ -383,37 +384,8 @@ class Manager:
                 )
             else:
                 work = self._pg.allreduce([tensor], ReduceOp.SUM)
-                work.wait()
 
-            fut = work.get_future()
-
-            stream: Optional[torch.cuda.Stream] = (
-                torch.cuda.current_stream() if torch.cuda.is_available() else None
-            )
-
-            # schedule grad normalization as a continuation
-            # on the Future
-            @torch.profiler.record_function("torchft::manager::allreduce::callback")
-            def callback(
-                fut: torch.futures.Future[List[torch.Tensor]],
-            ) -> torch.Tensor:
-                nonlocal tensor, stream, num_participants
-
-                # change the stream to avoid making the callback stream
-                # dependent on process group stream running the allreduce
-                with torch.cuda.stream(stream) if stream is not None else nullcontext():
-                    # Setup stream dependency
-                    fut.wait()
-                    fut.value()
-                    tensor /= num_participants
-
-                    return tensor
-
-            fut = fut.then(callback)
-
-            fut = self.wrap_future(fut, tensor)
-
-            return _WorkWrapper(work, fut)
+            return _WorkWrapper(work, self, tensor, num_participants)
 
         except Exception as e:
             self._logger.exception(
@@ -933,3 +905,59 @@ class _ManagerLogger:
 
     def exception(self, msg: str) -> None:
         self._logger.exception(f"{self.prefix()} {msg}")
+
+
+class _WorkWrapper(dist._Work):
+    def __init__(
+        self,
+        work: dist._Work,
+        manager: Manager,
+        tensor: torch.Tensor,
+        num_participants: int,
+    ) -> None:
+        super().__init__()
+        self._manager = manager
+        self._work = work
+        self._tensor = tensor
+        self._num_participants = num_participants
+
+        self._fut: torch.futures.Future[torch.Tensor] = self._work.get_future()
+        self._stream: Optional[torch.cuda.Stream] = (
+            torch.cuda.current_stream() if torch.cuda.is_available() else None
+        )
+
+    def wait(self, timeout: Optional[timedelta] = None) -> bool:
+        with (
+            torch.cuda.stream(self._stream)
+            if self._stream is not None
+            else nullcontext()
+        ):
+            self._work.wait()
+
+        # schedule grad normalization as a continuation
+        # on the Future
+        @torch.profiler.record_function("torchft::manager::allreduce::callback")
+        def callback(
+            fut: torch.futures.Future[List[torch.Tensor]],
+        ) -> torch.Tensor:
+            # change the stream to avoid making the callback stream
+            # dependent on process group stream running the allreduce
+            with (
+                torch.cuda.stream(self._stream)
+                if self._stream is not None
+                else nullcontext()
+            ):
+                # Setup stream dependency
+                fut.wait()
+                self._tensor /= self._num_participants
+
+                return self._tensor
+
+        self._fut = self._fut.then(callback)
+        self._fut = self._manager.wrap_future(self._fut, self._tensor)
+
+        return True
+
+    def get_future(self) -> torch.futures.Future[torch.Tensor]:
+        self.wait()
+        return self._fut
