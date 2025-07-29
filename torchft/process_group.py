@@ -1497,7 +1497,7 @@ class ProcessGroupBaby(ProcessGroup):
         self, op_id: int, stream: Optional[torch.cuda.Stream]
     ) -> Future[object]:
         with self._futures_lock:
-            fut = Future()  # pyre-fixme[29]: is not a function
+            fut = Future()
             self._futures[op_id] = _FutureMetadata(future=fut, stream=stream)
             assert self._pipe is not None
             self._pipe.send(("future", op_id))
