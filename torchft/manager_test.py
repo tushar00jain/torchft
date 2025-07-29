@@ -401,7 +401,7 @@ class TestManager(TestCase):
 
         self.assertFalse(manager._errored)
 
-        bad_fut = torch.futures.Future()  # pyre-fixme[29]: not a function
+        bad_fut = torch.futures.Future()
         bad_fut.set_exception(RuntimeError("injected failure"))
         manager._pg.allreduce.return_value.get_future.return_value = bad_fut
         manager.allreduce(torch.tensor([1.0])).wait()
@@ -542,7 +542,7 @@ class TestManager(TestCase):
 
         self.assertIsNone(manager.errored())
 
-        fut = torch.futures.Future()  # pyre-fixme[29]: not a function
+        fut = torch.futures.Future()
         wrapped_fut = manager.wrap_future(fut, 2)
         self.assertIsNone(manager.errored())
 
@@ -559,7 +559,7 @@ class TestManager(TestCase):
 
         self.assertFalse(manager.errored())
 
-        fut = torch.futures.Future()  # pyre-fixme[29]: not a function
+        fut = torch.futures.Future()
         wrapped_fut = manager.wrap_future(fut, 2)
         wrapped_fut.wait()
         error = manager.errored()

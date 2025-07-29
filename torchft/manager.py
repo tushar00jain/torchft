@@ -388,7 +388,8 @@ class Manager:
                 )
             else:
                 work = self._pg.allreduce([tensor], ReduceOp.SUM)
-                work.wait()
+                if torch.cuda.is_available():
+                    work.block_current_stream()
 
             fut = work.get_future()
 
