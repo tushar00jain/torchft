@@ -183,6 +183,7 @@ class ProcessGroup(BaseProcessGroup):
         """
         raise NotImplementedError("not implemented")
 
+    # pyre-fixme[14]: inconsistent override
     def barrier(self, opts: BarrierOptions) -> Work:
         """
         Synchronizes all processes.
@@ -496,7 +497,7 @@ class ProcessGroupWrapper(ProcessGroup):
                 opts,
             )
 
-    def barrier(self, opts: BarrierOptions) -> Work:
+    def barrier(self, opts: Optional[BarrierOptions] = None) -> Work:
         with self._run_context():
             return self._wrap_work(self.parent.barrier(self._opts_hook(opts)), opts)
 
@@ -866,7 +867,7 @@ class ProcessGroupDummy(ProcessGroup):
         self._work.append(res)
         return res
 
-    def barrier(self, opts: BarrierOptions) -> Work:
+    def barrier(self, opts: Optional[BarrierOptions] = None) -> Work:
         return _DummyWork(None)
 
     def broadcast(self, tensor_list: List[torch.Tensor], opts: object) -> Work:
@@ -1613,7 +1614,7 @@ class ProcessGroupBaby(ProcessGroup):
             opts,
         )
 
-    def barrier(self, opts: BarrierOptions) -> Work:
+    def barrier(self, opts: Optional[BarrierOptions] = None) -> Work:
         return self._run_func("barrier", opts)
 
     def broadcast(
