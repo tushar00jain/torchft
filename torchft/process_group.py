@@ -1101,23 +1101,7 @@ class ManagedProcessGroup(ProcessGroupWrapper):
         self._manager = manager
 
     def allreduce(self, tensors: List[torch.Tensor], opts: object) -> Work:
-        # Ensure we have a valid quorum and are configured before trying to do
-        # any work.
-        self._manager.wait_quorum()
-
-        if self._manager.errored() is not None:
-            return _DummyWork(tensors)
-        try:
-            work = super().allreduce(tensors, opts)
-        except Exception as e:
-            self._manager.report_error(e)
-            return _DummyWork(tensors)
-
-        return _ManagedWork(
-            self._manager,
-            work,
-            tensors,
-        )
+        return self._manager.allreduce(tensors)
 
     def size(self) -> int:
         return self._manager.num_participants()
