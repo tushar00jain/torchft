@@ -526,10 +526,6 @@ class _StreamingDiLoCoFragment:
                 pack_offset += numel
                 flat_index += 1
 
-            work = self._manager.allreduce(
-                flat_buffer, should_quantize=self.should_quantize
-            )
-
             def callback(fut: torch.futures.Future[torch.Tensor]) -> None:
                 with torch.cuda.stream(self._stream) if self._stream else nullcontext():
                     nonlocal bucket_tensors, flat_buffer
@@ -540,8 +536,11 @@ class _StreamingDiLoCoFragment:
                             flat_buffer[pack_offset : pack_offset + numel].view_as(t)
                         )
 
-            fut = work.get_future()
-            fut = fut.then(callback)
+            work = self._manager.allreduce(
+                flat_buffer,
+                should_quantize=self.should_quantize,
+                callback=callback,
+            )
 
             self._allreduce_work.append(work)
 
