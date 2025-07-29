@@ -183,6 +183,7 @@ class ProcessGroup(BaseProcessGroup):
         """
         raise NotImplementedError("not implemented")
 
+    # pyre-fixme[14]: inconsistent override
     def barrier(self, opts: BarrierOptions) -> Work:
         """
         Synchronizes all processes.
@@ -496,7 +497,7 @@ class ProcessGroupWrapper(ProcessGroup):
                 opts,
             )
 
-    def barrier(self, opts: BarrierOptions) -> Work:
+    def barrier(self, opts: Optional[BarrierOptions] = None) -> Work:
         with self._run_context():
             return self._wrap_work(self.parent.barrier(self._opts_hook(opts)), opts)
 
@@ -866,7 +867,7 @@ class ProcessGroupDummy(ProcessGroup):
         self._work.append(res)
         return res
 
-    def barrier(self, opts: BarrierOptions) -> Work:
+    def barrier(self, opts: Optional[BarrierOptions] = None) -> Work:
         return _DummyWork(None)
 
     def broadcast(self, tensor_list: List[torch.Tensor], opts: object) -> Work:
@@ -1497,7 +1498,7 @@ class ProcessGroupBaby(ProcessGroup):
         self, op_id: int, stream: Optional[torch.cuda.Stream]
     ) -> Future[object]:
         with self._futures_lock:
-            fut = Future()  # pyre-fixme[29]: is not a function
+            fut = Future()
             self._futures[op_id] = _FutureMetadata(future=fut, stream=stream)
             assert self._pipe is not None
             self._pipe.send(("future", op_id))
@@ -1629,7 +1630,7 @@ class ProcessGroupBaby(ProcessGroup):
             opts,
         )
 
-    def barrier(self, opts: BarrierOptions) -> Work:
+    def barrier(self, opts: Optional[BarrierOptions] = None) -> Work:
         return self._run_func("barrier", opts)
 
     def broadcast(
