@@ -329,11 +329,27 @@ class Manager:
         self._participating_replica_rank: Optional[int] = None
         self._participating_replica_world_size: int = 0
 
-    def allow_state_dict_updates(self) -> None:
+        self._is_state_dict_read_allowed = True
+
+    def _allow_state_dict_read(self) -> None:
+        if self._is_state_dict_read_allowed:
+            return
+
+        self._is_state_dict_read_allowed = False
         self._state_dict_lock.w_release()
 
-    def disallow_state_dict_updates(self) -> None:
+    def allow_state_dict_read(self) -> None:
+        self._executor.submit(self._allow_state_dict_read)
+
+    def _disallow_state_dict_read(self) -> None:
+        if not self._is_state_dict_read_allowed:
+            return
+
+        self._is_state_dict_read_allowed = False
         self._state_dict_lock.w_acquire()
+
+    def disallow_state_dict_read(self) -> None:
+        self._executor.submit(self._disallow_state_dict_read)
 
     def register_state_dict_fn(
         self,
