@@ -683,6 +683,16 @@ class DiLoCo:
         for fragment in self._fragments:
             fragment.register_state_dict_fn()
 
+        def load_local_step(local_step: int) -> None:
+            self._local_step = local_step
+
+        def save_local_step() -> int:
+            return self._local_step
+
+        self._manager.register_state_dict_fn(
+            "local_step", load_local_step, save_local_step
+        )
+
     def _save_parameters(self) -> None:
         for fragment in self._fragments:
             fragment.save_parameters()
