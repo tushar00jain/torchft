@@ -91,6 +91,9 @@ class LocalSGD:
         )
         # Add optimizer hook which increments the local step counter and syncs if necessary
         self._hooks.append(
+            self._local_optimizer.register_step_pre_hook(self._step_pre_hook)
+        )
+        self._hooks.append(
             self._local_optimizer.register_step_post_hook(self._step_post_hook)
         )
         return self
@@ -703,6 +706,9 @@ class DiLoCo:
 
     def __enter__(self) -> "DiLoCo":
         # Add optimizer hook which increments the local step counter and syncs if necessary
+        self._hooks.append(
+            self._local_optimizer.register_step_pre_hook(self._step_pre_hook)
+        )
         self._hooks.append(
             self._local_optimizer.register_step_post_hook(self._step_post_hook)
         )
