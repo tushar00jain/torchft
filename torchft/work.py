@@ -10,7 +10,6 @@ class _DummyWork(dist._Work):
     def __init__(self, result: object) -> None:
         super().__init__()
         self.result_ = result
-        # pyre-fixme[29]: Future is not a function
         self.future_: torch.futures.Future[object] = torch.futures.Future()
         self.future_.set_result(result)
 
