@@ -18,19 +18,3 @@ class _DummyWork(dist._Work):
 
     def get_future(self) -> torch.futures.Future[object]:
         return self.future_
-
-
-class _WorkWrapper(dist._Work):
-    def __init__(
-        self, work: dist._Work, fut: torch.futures.Future[torch.Tensor]
-    ) -> None:
-        super().__init__()
-        self._work = work
-        self._fut = fut
-
-    def wait(self, timeout: Optional[timedelta] = None) -> bool:
-        self._fut.wait()
-        return True
-
-    def get_future(self) -> torch.futures.Future[torch.Tensor]:
-        return self._fut
