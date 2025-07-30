@@ -705,6 +705,9 @@ class DiLoCo:
             fragment.restore_parameters()
 
     def __enter__(self) -> "DiLoCo":
+        self._hooks.append(
+            self._local_optimizer.register_step_pre_hook(self._step_pre_hook)
+        )
         # Add optimizer hook which increments the local step counter and syncs if necessary
         self._hooks.append(
             self._local_optimizer.register_step_pre_hook(self._step_pre_hook)
