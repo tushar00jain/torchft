@@ -44,6 +44,15 @@ class CheckpointTransport(Generic[T], ABC):
         """
         ...
 
+    def allow_checkpoint(self, step: int) -> None:
+        """
+        Called when checkpoint is allowed to be sent to make sure access to the state_dict is safe.
+
+        Args:
+            step: the step number that the checkpoint is for
+        """
+        ...
+
     @abstractmethod
     def recv_checkpoint(
         self, src_rank: int, metadata: str, step: int, timeout: timedelta
