@@ -411,13 +411,6 @@ class _StreamingDiLoCoFragment:
         ):
             self._average_grads()
 
-            for work in self._allreduce_work:
-                work.wait()
-
-            if self._stream is not None:
-                self._stop_event = torch.cuda.Event()
-                self._stop_event.record()
-
     @torch.profiler.record_function("torchft::local_sgd::perform_sync")
     def perform_sync(self) -> bool:
         """
@@ -426,6 +419,18 @@ class _StreamingDiLoCoFragment:
         """
         # Waiting for an allreduce before it has been sent is currently not supported.
         assert len(self._allreduce_work) > 0
+
+        with (
+            torch.cuda.stream(self._stream)
+            if self._stream is not None
+            else nullcontext()
+        ):
+            for work in self._allreduce_work:
+                work.wait()
+
+            if self._stream is not None:
+                self._stop_event = torch.cuda.Event()
+                self._stop_event.record()
 
         self.wait()
 
