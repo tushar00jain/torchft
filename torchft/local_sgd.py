@@ -18,6 +18,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Type
 import torch
 import torch.distributed as dist
 from torch import nn, optim
+from torch.distributed.distributed_c10d import Work
 from torch.distributed.tensor import DTensor
 from torch.nn.parameter import Parameter
 from torch.optim.optimizer import Optimizer
@@ -208,7 +209,7 @@ class _StreamingDiLoCoFragment:
         self._outer_optimizer = outer_optimizer
 
         # Stores pending all reduce
-        self._allreduce_futures: list[torch.futures.Future[torch.Tensor]] = []
+        self._allreduce_work: list[Work] = []
         self._stream: Optional[torch.cuda.Stream] = (
             torch.cuda.Stream() if torch.cuda.is_available() else None
         )
@@ -376,7 +377,7 @@ class _StreamingDiLoCoFragment:
         """
         Waits for the previously scheduled allreduce to finish
         """
-        if len(self._allreduce_futures) == 0:
+        if len(self._allreduce_work) == 0:
             return
 
         if self._stream is not None:
@@ -384,7 +385,7 @@ class _StreamingDiLoCoFragment:
             self._stop_event.synchronize()
             self._stop_event = None
 
-        self._allreduce_futures = []
+        self._allreduce_work = []
 
     @torch.profiler.record_function("torchft::local_sgd::prepare_sync")
     def prepare_sync(self) -> None:
@@ -394,7 +395,7 @@ class _StreamingDiLoCoFragment:
         """
         self._save_grads()
 
-        assert len(self._allreduce_futures) == 0
+        assert len(self._allreduce_work) == 0
 
         # Make sure tensors are available to `_stream`
         if self._stream is not None:
@@ -407,7 +408,7 @@ class _StreamingDiLoCoFragment:
         ):
             self._average_grads()
 
-            for work in self._allreduce_futures:
+            for work in self._allreduce_work:
                 work.wait()
 
             if self._stream is not None:
@@ -421,7 +422,7 @@ class _StreamingDiLoCoFragment:
         steps using the outer optimizer.
         """
         # Waiting for an allreduce before it has been sent is currently not supported.
-        assert len(self._allreduce_futures) > 0
+        assert len(self._allreduce_work) > 0
 
         self.wait()
 
@@ -475,7 +476,8 @@ class _StreamingDiLoCoFragment:
             work = self._manager.allreduce(
                 self._grads[name], should_quantize=self.should_quantize
             )
-            self._allreduce_futures.append(work)
+
+            self._allreduce_work.append(work)
 
     def _bucketize_and_allreduce(
         self,
@@ -530,8 +532,10 @@ class _StreamingDiLoCoFragment:
                             flat_buffer[pack_offset : pack_offset + numel].view_as(t)
                         )
 
-            work = work.then(callback)
-            self._allreduce_futures.append(work)
+            fut = work.get_future()
+            fut.add_done_callback(callback)
+
+            self._allreduce_work.append(work)
 
             offset += chunk_size
 
