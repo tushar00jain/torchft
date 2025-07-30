@@ -112,7 +112,7 @@ class LocalSGD:
         self, _optim: optim.Optimizer, _args: Tuple[Any, ...], _kwargs: Dict[str, Any]
     ) -> None:
         # The checkpoint may transfer model parameters, so we need to make access to it thread safe
-        self._manager.allow_state_dict_updates()
+        self._manager.disallow_state_dict_read()
 
     def _step_post_hook(
         self, _optim: optim.Optimizer, _args: Tuple[Any, ...], _kwargs: Dict[str, Any]
@@ -120,7 +120,7 @@ class LocalSGD:
         """
         This hook is registered on the optimizer and is called after the optimizer step.
         """
-        self._manager.allow_state_dict_updates()
+        self._manager.allow_state_dict_read()
 
         self._local_step += 1
         if self._local_step >= self._sync_every:
@@ -524,9 +524,14 @@ class _StreamingDiLoCoFragment:
             )
 
             def callback(fut: torch.futures.Future[torch.Tensor]) -> None:
-                nonlocal bucket_tensors, flat_buffer
-                for t, pack_offset, numel in bucket_tensors:
-                    t.copy_(flat_buffer[pack_offset : pack_offset + numel].view_as(t))
+                with torch.cuda.stream(self._stream) if self._stream else nullcontext():
+                    nonlocal bucket_tensors, flat_buffer
+                    # Setup stream dependency
+                    fut.wait()
+                    for t, pack_offset, numel in bucket_tensors:
+                        t.copy_(
+                            flat_buffer[pack_offset : pack_offset + numel].view_as(t)
+                        )
 
             work = work.then(callback)
             self._allreduce_futures.append(work)
@@ -691,7 +696,7 @@ class DiLoCo:
         self, _optim: optim.Optimizer, _args: Tuple[Any, ...], _kwargs: Dict[str, Any]
     ) -> None:
         # The checkpoint may transfer model parameters, so we need to make access to it thread safe
-        self._manager.disallow_state_dict_updates()
+        self._manager.disallow_state_dict_read()
 
     def __exit__(
         self,
@@ -727,7 +732,7 @@ class DiLoCo:
         """
         This hook is registered on the optimizer and is called after the optimizer step.
         """
-        self._manager.allow_state_dict_updates()
+        self._manager.allow_state_dict_read()
 
         # We need to make sure all nodes send the same fragments in order.
         # This is to avoid deadlocking e.g.
