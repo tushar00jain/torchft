@@ -105,12 +105,20 @@ class LocalSGD:
 
         return False  # Propagate exceptions
 
+    def _step_pre_hook(
+        self, _optim: optim.Optimizer, _args: Tuple[Any, ...], _kwargs: Dict[str, Any]
+    ) -> None:
+        # The checkpoint may transfer model parameters, so we need to make access to it thread safe
+        self._manager.disallow_checkpoint()
+
     def _step_post_hook(
         self, _optim: optim.Optimizer, _args: Tuple[Any, ...], _kwargs: Dict[str, Any]
     ) -> None:
         """
         This hook is registered on the optimizer and is called after the optimizer step.
         """
+        self._manager.allow_checkpoint()
+
         self._local_step += 1
         if self._local_step >= self._sync_every:
             self.sync()
@@ -673,6 +681,12 @@ class DiLoCo:
         )
         return self
 
+    def _step_pre_hook(
+        self, _optim: optim.Optimizer, _args: Tuple[Any, ...], _kwargs: Dict[str, Any]
+    ) -> None:
+        # The checkpoint may transfer model parameters, so we need to make access to it thread safe
+        self._manager.disallow_checkpoint()
+
     def __exit__(
         self,
         exc_type: Optional[Type[BaseException]],
@@ -707,6 +721,8 @@ class DiLoCo:
         """
         This hook is registered on the optimizer and is called after the optimizer step.
         """
+        self._manager.allow_checkpoint()
+
         # We need to make sure all nodes send the same fragments in order.
         # This is to avoid deadlocking e.g.
         #
