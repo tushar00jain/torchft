@@ -16,6 +16,7 @@ from http.server import BaseHTTPRequestHandler
 from typing import Generator, List, Optional, TypeVar, cast
 
 import torch
+from torch.distributed.tensor import DTensor, distribute_tensor
 from torch.utils._pytree import TreeSpec, tree_flatten, tree_unflatten
 
 from torchft.checkpointing._rwlock import RWLock
@@ -266,6 +267,15 @@ class HTTPTransport(CheckpointTransport[T]):
             return tree_unflatten(values, spec)
 
 
+def _clone_cpu_tensor(tensor: torch.Tensor) -> torch.Tensor:
+    if isinstance(tensor, DTensor):
+        return distribute_tensor(
+            tensor.to_local().clone(), tensor.device_mesh, tensor.placements
+        )
+    else:
+        return tensor.clone()
+
+
 def _to_cpu(values: List[T], pin_memory: bool) -> List[T]:
     out = []
     for v in values:
@@ -278,7 +288,7 @@ def _to_cpu(values: List[T], pin_memory: bool) -> List[T]:
                 else:
                     out.append(v.cpu())
             else:
-                out.append(v)
+                out.append(_clone_cpu_tensor(v))
         else:
             out.append(v)
     return out
