@@ -16,7 +16,8 @@ from torch.distributed import TCPStore
 from torchft._torchft import QuorumResult
 from torchft.checkpointing.transport import CheckpointTransport
 from torchft.manager import MANAGER_ADDR_KEY, REPLICA_ID_KEY, Manager, WorldSizeMode
-from torchft.process_group import ProcessGroup, _DummyWork
+from torchft.process_group import ProcessGroup
+from torchft.work import _DummyWork
 
 
 def mock_should_commit(
@@ -586,16 +587,16 @@ class TestManager(TestCase):
         manager._pg.allreduce.return_value = _DummyWork(None)
 
         self.assertTrue(manager.is_participating())
-        fut = torch.futures.Future()  # pyre-fixme[29]: not a function
-        fut = manager.allreduce(torch.tensor([1.0]))
+        work = manager.allreduce(torch.tensor([1.0]))
+        fut = work.get_future()
         result = fut.value()
         torch.testing.assert_close(result, torch.tensor([1.0 / 5]))
 
         # check healing numerics
         manager._healing = True
         self.assertFalse(manager.is_participating())
-        fut = torch.futures.Future()  # pyre-fixme[29]: not a function
-        fut = manager.allreduce(torch.tensor([1.0]))
+        work = manager.allreduce(torch.tensor([1.0]))
+        fut = work.get_future()
         result = fut.value()
         torch.testing.assert_close(result, torch.tensor([0.0]))
 
