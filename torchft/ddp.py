@@ -69,6 +69,7 @@ class DistributedDataParallel(parallel.DistributedDataParallel):
         state: "Manager", bucket: dist.GradBucket
     ) -> torch.futures.Future[torch.Tensor]:
         work = state.allreduce(bucket.buffer())
+        work.synchronize()
         return work.get_future()
 
 
