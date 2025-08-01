@@ -524,6 +524,7 @@ class _StreamingDiLoCoFragment:
                             flat_buffer[pack_offset : pack_offset + numel].view_as(t)
                         )
 
+            work.synchronize()
             fut = work.get_future()
             fut.add_done_callback(callback)
 
