@@ -3,6 +3,7 @@ import copy
 import json
 import logging
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import ExitStack
 from datetime import timedelta
@@ -141,6 +142,7 @@ class MockDiLoCoTrainer(DiLoCoTrainer):
         diloco_args: dict[str, Any],
         inner_lr: float = 1,
         outer_lr: float = 2,
+        quorum_barrier: Optional[threading.Barrier] = None,
     ) -> None:
         self.inner_lr = inner_lr
         self.outer_lr = outer_lr
@@ -149,6 +151,8 @@ class MockDiLoCoTrainer(DiLoCoTrainer):
         super().__init__(
             rank, store_port, device, runner, model_state_dict, n_fragments, diloco_args
         )
+
+        self.quorum_barrier = quorum_barrier
 
     def setup_model(self) -> MockModel:
         """Set up the mock model and move it to the device."""
@@ -186,6 +190,14 @@ class MockDiLoCoTrainer(DiLoCoTrainer):
             backup_device=self.device,
             **self.diloco_args,
         ) as self.diloco:
+            if self.quorum_barrier is not None:
+                self.manager.start_quorum()
+                self.manager.wait_quorum()
+                assert self.quorum_barrier is not None
+                self.quorum_barrier.wait()
+                assert self.manager.should_commit()
+                assert self.manager.should_commit()
+
             local_step = 0
             manager_steps = set()
             while True:
@@ -197,7 +209,7 @@ class MockDiLoCoTrainer(DiLoCoTrainer):
 
                 manager_curr_step = self.manager.current_step()
 
-                if manager_curr_step == 5:
+                if manager_curr_step == 7:
                     break
 
                 if manager_curr_step not in manager_steps:
@@ -248,6 +260,7 @@ def mock_diloco_train_loop(
     model_state_dict = train_loop_args.get("model_state_dict", {})
     n_fragments = train_loop_args.get("n_fragments", 1)
     diloco_args = train_loop_args.get("diloco_args", {})
+    quorum_barrier = train_loop_args.get("quorum_barrier", None)
 
     with ExitStack() as stack:
         trainer = MockDiLoCoTrainer(
@@ -258,6 +271,7 @@ def mock_diloco_train_loop(
             model_state_dict,
             n_fragments,
             diloco_args,
+            quorum_barrier=quorum_barrier,
         )
         stack.callback(trainer.manager.shutdown)
         return trainer.train_loop()
@@ -304,6 +318,7 @@ class DiLoCoMockedUpdateTest(TestCase):
         # Create a proper state_dict for the model to avoid load_state_dict errors
         temp_model = MockModel(in_dim=1, out_dim=1, n_layers=n_fragments)
         model_state_dict = temp_model.state_dict()
+        quorum_barrier = threading.Barrier(num_replicas)
 
         with ThreadPoolExecutor(max_workers=num_replicas) as executor:
             for replica_id in range(num_replicas):
@@ -316,6 +331,7 @@ class DiLoCoMockedUpdateTest(TestCase):
                     train_loop=mock_diloco_train_loop,
                     use_cuda=use_cuda,
                     train_loop_args={
+                        "quorum_barrier": quorum_barrier,
                         "n_fragments": n_fragments,
                         "model_state_dict": model_state_dict,
                         "diloco_args": {
