@@ -5,6 +5,8 @@
 # LICENSE file in the root directory of this source tree.
 
 import concurrent
+import threading
+import time
 from datetime import timedelta
 from typing import Optional
 from unittest import TestCase
@@ -14,6 +16,7 @@ import torch
 from torch.distributed import TCPStore
 
 from torchft._torchft import QuorumResult
+from torchft.checkpointing._rwlock import RWLock
 from torchft.checkpointing.transport import CheckpointTransport
 from torchft.manager import MANAGER_ADDR_KEY, REPLICA_ID_KEY, Manager, WorldSizeMode
 from torchft.process_group import ProcessGroup
@@ -778,3 +781,178 @@ class TestManager(TestCase):
         # This should succeed and reset the counter
         self.assertTrue(manager.should_commit())
         self.assertEqual(manager._commit_failures, 0)
+
+    @patch("torchft.manager.ManagerClient", autospec=True)
+    def test_state_dict_lock_allow_disallow(self, client_mock: MagicMock) -> None:
+        """Test that allow_state_dict_read and disallow_state_dict_read methods work correctly."""
+        manager = self._create_manager()
+
+        # Initially, state dict read should be allowed
+        self.assertTrue(manager._is_state_dict_read_allowed)
+
+        # Test disallow_state_dict_read
+        manager.disallow_state_dict_read()
+        self.assertFalse(manager._is_state_dict_read_allowed)
+        self.assertTrue(manager._state_dict_lock.w_locked())
+
+        # Calling disallow_state_dict_read again should be a no-op
+        manager.disallow_state_dict_read()
+        self.assertFalse(manager._is_state_dict_read_allowed)
+        self.assertTrue(manager._state_dict_lock.w_locked())
+
+        # Test allow_state_dict_read
+        manager.allow_state_dict_read()
+        self.assertTrue(manager._is_state_dict_read_allowed)
+        self.assertFalse(manager._state_dict_lock.w_locked())
+
+        # Calling allow_state_dict_read again should be a no-op
+        manager.allow_state_dict_read()
+        self.assertTrue(manager._is_state_dict_read_allowed)
+        self.assertFalse(manager._state_dict_lock.w_locked())
+
+    @patch("torchft.manager.ManagerClient", autospec=True)
+    def test_state_dict_lock_concurrent_access(self, client_mock: MagicMock) -> None:
+        """Test that _state_dict_lock properly protects concurrent access to the state dictionary."""
+        manager: Manager = self._create_manager()
+
+        # Create flags for thread synchronization
+        access_attempted: threading.Event = threading.Event()
+        can_proceed: threading.Event = threading.Event()
+        access_result: dict[str, bool] = {"succeeded": False}
+
+        def try_access_state_dict() -> None:
+            # Wait until the main thread signals it's ready
+            nonlocal access_attempted, can_proceed, access_result, manager
+            access_attempted.set()
+            can_proceed.wait(timeout=1.0)
+
+            # Try to access the state dict
+            if manager._is_state_dict_read_allowed:
+                access_result["succeeded"] = True
+
+        # Start a thread that will try to access the state dict
+        thread = threading.Thread(target=try_access_state_dict)
+        thread.daemon = True
+        thread.start()
+
+        # Disallow state dict read
+        manager.disallow_state_dict_read()
+        self.assertFalse(manager._is_state_dict_read_allowed)
+
+        # Wait for the thread to be ready
+        access_attempted.wait(timeout=1.0)
+
+        # Signal the thread to proceed while state dict read is disallowed
+        can_proceed.set()
+        thread.join(timeout=1.0)
+
+        # The thread should not have been able to access the state dict
+        self.assertFalse(access_result["succeeded"])
+
+        # Reset for the second part of the test
+        access_attempted.clear()
+        can_proceed.clear()
+
+        # Start another thread
+        thread = threading.Thread(target=try_access_state_dict)
+        thread.daemon = True
+        thread.start()
+
+        # Allow state dict read
+        manager.allow_state_dict_read()
+        self.assertTrue(manager._is_state_dict_read_allowed)
+
+        # Wait for the thread to be ready
+        access_attempted.wait(timeout=1.0)
+
+        # Signal the thread to proceed while state dict read is allowed
+        can_proceed.set()
+        thread.join(timeout=1.0)
+
+        # The thread should now have been able to access the state dict
+        self.assertTrue(access_result["succeeded"])
+
+    @patch("torchft.manager.ManagerClient", autospec=True)
+    def test_manager_state_dict_with_lock(self, client_mock: MagicMock) -> None:
+        """Test that _manager_state_dict properly uses the read lock."""
+        manager = self._create_manager()
+
+        # Replace the real RWLock with a mock to track lock acquisition
+        original_lock = manager._state_dict_lock
+        mock_lock = create_autospec(RWLock)
+        mock_context = MagicMock()
+        mock_lock.r_lock.return_value.__enter__ = lambda _: mock_context
+        mock_lock.r_lock.return_value.__exit__ = lambda *args: None
+        manager._state_dict_lock = mock_lock
+
+        # Call _manager_state_dict
+        result = manager._manager_state_dict()
+
+        # Verify that r_lock was called
+        mock_lock.r_lock.assert_called_once()
+
+        # Restore the original lock
+        manager._state_dict_lock = original_lock
+
+    @patch("torchft.manager.ManagerClient", autospec=True)
+    def test_state_dict_lock_and_checkpoint_lock_interaction(
+        self, client_mock: MagicMock
+    ) -> None:
+        """Test that _state_dict_lock in Manager and _checkpoint_lock in HTTPTransport don't deadlock."""
+        import threading
+        from datetime import timedelta
+        from typing import Any, Dict
+
+        from torchft.checkpointing.http_transport import HTTPTransport
+
+        # Create a manager and an HTTP transport
+        manager = self._create_manager()
+        transport = HTTPTransport(timeout=timedelta(seconds=1), num_chunks=0)
+        manager._checkpoint_transport = transport
+
+        # Create flags for thread synchronization
+        thread1_ready: threading.Event = threading.Event()
+        thread2_ready: threading.Event = threading.Event()
+        thread1_lock_acquired: threading.Event = threading.Event()
+        thread2_lock_acquired: threading.Event = threading.Event()
+        thread1_finished: threading.Event = threading.Event()
+        thread2_finished: threading.Event = threading.Event()
+        error_event: threading.Event = threading.Event()
+        error_message: Dict[str, str] = {"message": ""}
+
+        # For type annotations in nested functions
+        manager_ref: Manager = manager
+        transport_ref: HTTPTransport[Dict[str, Any]] = transport
+
+        # Thread 1: Acquire state_dict_lock, then checkpoint_lock
+        def thread1_func() -> None:
+            nonlocal thread1_ready, thread2_ready, thread1_lock_acquired
+            nonlocal thread2_lock_acquired, thread1_finished, error_event, error_message
+            try:
+                # Signal that thread is ready
+                thread1_ready.set()
+
+                # Wait for thread 2 to be ready
+                thread2_ready.wait(timeout=1.0)
+
+                # Acquire state_dict_lock
+                manager_ref.disallow_state_dict_read()
+
+                # Signal that lock is acquired
+                thread1_lock_acquired.set()
+
+                # Wait for thread 2 to acquire its lock
+                thread2_lock_acquired.wait(timeout=1.0)
+
+                # Try to acquire checkpoint_lock (this would deadlock if locks aren't compatible)
+                transport_ref.disallow_checkpoint()
+                transport_ref.allow_checkpoint(step=1)
+
+                # Release state_dict_lock
+                manager_ref.allow_state_dict_read()
+
+                # Signal that thread finished successfully
+                thread1_finished.set()
+            except Exception as e:
+                error_message["message"] = str(e)
+                error_event.set()
