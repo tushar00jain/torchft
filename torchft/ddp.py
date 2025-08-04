@@ -75,11 +75,10 @@ class DistributedDataParallel(parallel.DistributedDataParallel):
         fut = work.get_future()
 
         def callback(
-            tensors: torch.futures.Future[list[torch.Tensor]],
-        ) -> list[torch.Tensor]:
+            tensor: torch.futures.Future[torch.Tensor],
+        ) -> None:
             nonlocal result_fut
-            result_fut.set_result(tensors.value()[0])
-            return []
+            result_fut.set_result(tensor.value())
 
         fut = fut.then(callback)
 
