@@ -7,7 +7,10 @@
 import types
 import unittest
 from datetime import timedelta
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, TypeVar, cast
+
+# Define a type variable for the Future's value type
+T = TypeVar("T")
 
 import parameterized
 import torch
@@ -51,7 +54,7 @@ class TestManagedWork(unittest.TestCase):
             self.skipTest("CUDA not available")
 
         # Create a tensor to work with
-        tensor = torch.ones(1, dtype=torch.float32, device=device)
+        tensor: torch.Tensor = torch.ones(1, dtype=torch.float32, device=device)
 
         # Create a simple work object
         work = SimpleWork([tensor])
@@ -65,20 +68,22 @@ class TestManagedWork(unittest.TestCase):
         )
 
         # Create the managed work
-        managed_work = _ManagedWork(work, manager, [tensor])
+        managed_work = _ManagedWork(manager, work, [tensor])
 
         # Track callback execution
         callback_executed: bool = False
 
-        def callback(fut: Future[List[torch.Tensor]]) -> List[torch.Tensor]:
-            nonlocal callback_executed
+        def callback(fut: Future[object]) -> List[torch.Tensor]:
+            # Cast to the expected type
+            nonlocal callback_executed, tensor
             callback_executed = True
             # Multiply tensor by 2 to verify the callback ran
-            fut.value()[0].mul_(2)
-            return fut.value()
+            tensor.mul_(2)
+            return [tensor]
 
         # Add the callback
-        managed_work.add_callback(callback)
+        fut = managed_work.get_future()
+        fut = fut.then(callback)
 
         # Verify callback hasn't executed yet
         self.assertFalse(callback_executed)
@@ -106,7 +111,7 @@ class TestManagedWork(unittest.TestCase):
             self.skipTest("CUDA not available")
 
         # Create a tensor to work with
-        tensor = torch.ones(1, dtype=torch.float32, device=device)
+        tensor: torch.Tensor = torch.ones(1, dtype=torch.float32, device=device)
 
         # Create a simple work object
         work = SimpleWork([tensor])
@@ -118,30 +123,37 @@ class TestManagedWork(unittest.TestCase):
         )
 
         # Create the managed work
-        managed_work = _ManagedWork(work, manager, [tensor])
+        managed_work = _ManagedWork(manager, work, [tensor])
 
         # Track execution order
         execution_order: List[int] = []
 
-        def callback1(fut: Future[List[torch.Tensor]]) -> List[torch.Tensor]:
+        def callback1(fut: Future[T]) -> List[torch.Tensor]:
+            # Cast to the expected type
+            nonlocal tensor
             execution_order.append(1)
-            fut.value()[0].add_(1)
-            return fut.value()
+            tensor.add_(1)
+            return [tensor]
 
-        def callback2(fut: Future[List[torch.Tensor]]) -> List[torch.Tensor]:
+        def callback2(fut: Future[T]) -> List[torch.Tensor]:
+            # Cast to the expected type
+            nonlocal tensor
             execution_order.append(2)
-            fut.value()[0].add_(2)
-            return fut.value()
+            tensor.add_(2)
+            return [tensor]
 
-        def callback3(fut: Future[List[torch.Tensor]]) -> List[torch.Tensor]:
+        def callback3(fut: Future[T]) -> List[torch.Tensor]:
+            # Cast to the expected type
+            nonlocal tensor
             execution_order.append(3)
-            fut.value()[0].add_(3)
-            return fut.value()
+            tensor.add_(3)
+            return [tensor]
 
         # Add callbacks
-        managed_work.add_callback(callback1)
-        managed_work.add_callback(callback2)
-        managed_work.add_callback(callback3)
+        fut = managed_work.get_future()
+        fut = fut.then(callback1)
+        fut = fut.then(callback2)
+        fut = fut.then(callback3)
 
         # Verify no callbacks have executed yet
         self.assertEqual(len(execution_order), 0)
@@ -169,7 +181,7 @@ class TestManagedWork(unittest.TestCase):
             self.skipTest("CUDA not available")
 
         # Create a tensor to work with
-        tensor = torch.ones(1, dtype=torch.float32, device=device)
+        tensor: torch.Tensor = torch.ones(1, dtype=torch.float32, device=device)
 
         # Create a simple work object
         work = SimpleWork([tensor])
@@ -181,7 +193,7 @@ class TestManagedWork(unittest.TestCase):
         )
 
         # Create the managed work
-        managed_work = _ManagedWork(work, manager, [tensor])
+        managed_work = _ManagedWork(manager, work, [tensor])
 
         # Get the future
         future = managed_work.get_future()
@@ -189,22 +201,23 @@ class TestManagedWork(unittest.TestCase):
         # Track callback execution
         callback_executed: bool = False
 
-        def callback(fut: Future[List[torch.Tensor]]) -> List[torch.Tensor]:
-            nonlocal callback_executed
+        def callback(fut: Future[object]) -> List[torch.Tensor]:
+            # Cast to the expected type
+            nonlocal callback_executed, tensor
             callback_executed = True
             # Multiply tensor by 3 to verify the callback ran
-            fut.value()[0].mul_(3)
-            return fut.value()
+            tensor.mul_(3)
+            return [tensor]
 
         # Use the then API
-        future.then(callback)
+        future = future.then(callback)
 
         # Verify callback hasn't executed yet
         self.assertFalse(callback_executed)
         self.assertEqual(tensor.item(), 1.0)
 
-        # Call wait() which should trigger the callback
-        future.wait()
+        # Call wait() on the managed_work first to set up the future properly
+        managed_work.wait()
 
         # Verify callback has executed
         self.assertTrue(callback_executed)
