@@ -6,6 +6,8 @@
 
 import concurrent
 from datetime import timedelta
+import threading
+import time
 from typing import Optional
 from unittest import TestCase
 from unittest.mock import MagicMock, create_autospec, patch
@@ -15,6 +17,7 @@ from torch.distributed import TCPStore
 
 from torchft._torchft import QuorumResult
 from torchft.checkpointing.transport import CheckpointTransport
+from torchft.checkpointing._rwlock import RWLock
 from torchft.manager import MANAGER_ADDR_KEY, REPLICA_ID_KEY, Manager, WorldSizeMode
 from torchft.process_group import ProcessGroup
 from torchft.work import _DummyWork
@@ -776,3 +779,114 @@ class TestManager(TestCase):
         # This should succeed and reset the counter
         self.assertTrue(manager.should_commit())
         self.assertEqual(manager._commit_failures, 0)
+
+    @patch("torchft.manager.ManagerClient", autospec=True)
+    def test_state_dict_lock_allow_disallow(self, client_mock: MagicMock) -> None:
+        """Test that allow_state_dict_read and disallow_state_dict_read methods work correctly."""
+        manager = self._create_manager()
+
+        # Initially, state dict read should be allowed
+        self.assertTrue(manager._is_state_dict_read_allowed)
+
+        # Test disallow_state_dict_read
+        manager.disallow_state_dict_read()
+        self.assertFalse(manager._is_state_dict_read_allowed)
+        self.assertTrue(manager._state_dict_lock.w_locked())
+
+        # Calling disallow_state_dict_read again should be a no-op
+        manager.disallow_state_dict_read()
+        self.assertFalse(manager._is_state_dict_read_allowed)
+        self.assertTrue(manager._state_dict_lock.w_locked())
+
+        # Test allow_state_dict_read
+        manager.allow_state_dict_read()
+        self.assertTrue(manager._is_state_dict_read_allowed)
+        self.assertFalse(manager._state_dict_lock.w_locked())
+
+        # Calling allow_state_dict_read again should be a no-op
+        manager.allow_state_dict_read()
+        self.assertTrue(manager._is_state_dict_read_allowed)
+        self.assertFalse(manager._state_dict_lock.w_locked())
+
+    @patch("torchft.manager.ManagerClient", autospec=True)
+    def test_state_dict_lock_concurrent_access(self, client_mock: MagicMock) -> None:
+        """Test that _state_dict_lock properly protects concurrent access to the state dictionary."""
+        manager = self._create_manager()
+
+        # Create flags for thread synchronization
+        access_attempted = threading.Event()
+        can_proceed = threading.Event()
+        access_result = {"succeeded": False}
+
+        def try_access_state_dict():
+            # Wait until the main thread signals it's ready
+            access_attempted.set()
+            can_proceed.wait(timeout=1.0)
+
+            # Try to access the state dict
+            if manager._is_state_dict_read_allowed:
+                access_result["succeeded"] = True
+
+        # Start a thread that will try to access the state dict
+        thread = threading.Thread(target=try_access_state_dict)
+        thread.daemon = True
+        thread.start()
+
+        # Disallow state dict read
+        manager.disallow_state_dict_read()
+        self.assertFalse(manager._is_state_dict_read_allowed)
+
+        # Wait for the thread to be ready
+        access_attempted.wait(timeout=1.0)
+
+        # Signal the thread to proceed while state dict read is disallowed
+        can_proceed.set()
+        thread.join(timeout=1.0)
+
+        # The thread should not have been able to access the state dict
+        self.assertFalse(access_result["succeeded"])
+
+        # Reset for the second part of the test
+        access_attempted.clear()
+        can_proceed.clear()
+
+        # Start another thread
+        thread = threading.Thread(target=try_access_state_dict)
+        thread.daemon = True
+        thread.start()
+
+        # Allow state dict read
+        manager.allow_state_dict_read()
+        self.assertTrue(manager._is_state_dict_read_allowed)
+
+        # Wait for the thread to be ready
+        access_attempted.wait(timeout=1.0)
+
+        # Signal the thread to proceed while state dict read is allowed
+        can_proceed.set()
+        thread.join(timeout=1.0)
+
+        # The thread should now have been able to access the state dict
+        self.assertTrue(access_result["succeeded"])
+
+    @patch("torchft.manager.ManagerClient", autospec=True)
+    def test_manager_state_dict_with_lock(self, client_mock: MagicMock) -> None:
+        """Test that _manager_state_dict properly uses the read lock."""
+        manager = self._create_manager()
+
+        # Replace the real RWLock with a mock to track lock acquisition
+        original_lock = manager._state_dict_lock
+        mock_lock = create_autospec(RWLock)
+        mock_context = MagicMock()
+        mock_lock.r_lock.return_value.__enter__ = lambda _: mock_context
+        mock_lock.r_lock.return_value.__exit__ = lambda *args: None
+        manager._state_dict_lock = mock_lock
+
+        # Call _manager_state_dict
+        result = manager._manager_state_dict()
+
+        # Verify that r_lock was called
+        mock_lock.r_lock.assert_called_once()
+
+        # Restore the original lock
+        manager._state_dict_lock = original_lock
