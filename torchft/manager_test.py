@@ -588,19 +588,17 @@ class TestManager(TestCase):
 
         self.assertTrue(manager.is_participating())
         work = manager.allreduce(torch.tensor([1.0]))
-        work.synchronize()
         fut = work.get_future()
         result = fut.value()
-        torch.testing.assert_close(result, torch.tensor([1.0 / 5]))
+        torch.testing.assert_close(result[0], torch.tensor([1.0 / 5]))
 
         # check healing numerics
         manager._healing = True
         self.assertFalse(manager.is_participating())
         work = manager.allreduce(torch.tensor([1.0]))
-        work.synchronize()
         fut = work.get_future()
         result = fut.value()
-        torch.testing.assert_close(result, torch.tensor([0.0]))
+        torch.testing.assert_close(result[0], torch.tensor([0.0]))
 
     @patch("torchft.manager.ManagerClient", autospec=True)
     def test_quorum_happy_timeouts(self, client_mock: MagicMock) -> None:
