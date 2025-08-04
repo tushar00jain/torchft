@@ -14,7 +14,7 @@ Manager to provide fault tolerance.
 
 import os
 import sys
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, cast
 from unittest.mock import patch
 
 import torch
@@ -26,7 +26,7 @@ from torch.nn import parallel
 from torchft.process_group import ProcessGroup, ProcessGroupDummy, ProcessGroupGloo
 
 if TYPE_CHECKING:
-    from torchft.manager import Manager
+    from torchft.manager import Manager, _ManagedFuture, _ManagedWork
 
 
 class DistributedDataParallel(parallel.DistributedDataParallel):
@@ -69,22 +69,12 @@ class DistributedDataParallel(parallel.DistributedDataParallel):
         state: "Manager", bucket: dist.GradBucket
     ) -> torch.futures.Future[torch.Tensor]:
         work = state.allreduce(bucket.buffer())
-
-        result_fut: torch.futures.Future[torch.Tensor] = torch.futures.Future()
-
-        fut = work.get_future()
-
-        def callback(
-            tensors: torch.futures.Future[list[torch.Tensor]],
-        ) -> list[torch.Tensor]:
-            nonlocal result_fut
-            result_fut.set_result(tensors.value()[0])
-            return []
-
-        fut = fut.then(callback)
-
+        work = cast("_ManagedWork", work)
         work.wait()
-        return result_fut
+        fut = work.get_future()
+        fut = cast("_ManagedFuture[torch.Tensor]", fut)
+        assert fut._fut
+        return fut._fut
 
 
 class PureDistributedDataParallel(nn.Module):
