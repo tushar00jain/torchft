@@ -379,6 +379,7 @@ class Manager:
         self,
         tensor: torch.Tensor,
         should_quantize: bool = False,
+        reduce_op: ReduceOp = ReduceOp.SUM,
     ) -> Work:
         """
         Fault tolerant allreduce the tensor and return a Future that will be completed when
@@ -413,10 +414,10 @@ class Manager:
             # it later.
             if should_quantize and IS_TRITON_AVAILABLE:
                 work = allreduce_quantized(
-                    [tensor], ReduceOp.SUM, self._pg, torch.cuda.current_stream()
+                    [tensor], reduce_op, self._pg, torch.cuda.current_stream()
                 )
             else:
-                work = self._pg.allreduce([tensor], ReduceOp.SUM)
+                work = self._pg.allreduce([tensor], reduce_op)
 
             # schedule grad normalization as a continuation
             # on the Future
@@ -424,8 +425,9 @@ class Manager:
             def callback(
                 fut: torch.futures.Future[list[torch.Tensor]],
             ) -> torch.Tensor:
-                nonlocal num_participants, tensor
-                tensor /= num_participants
+                nonlocal num_participants, tensor, reduce_op
+                if reduce_op == ReduceOp.SUM:
+                    tensor /= num_participants
                 return tensor
 
             managed_work = _ManagedWork(self, work, tensor)
