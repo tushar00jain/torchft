@@ -14,7 +14,7 @@ from torch.distributed.distributed_c10d import Work
 from torch.futures import Future
 
 from torchft.ddp import DistributedDataParallel, PureDistributedDataParallel
-from torchft.manager import Manager
+from torchft.manager import Manager, _ManagedWork
 from torchft.process_group import ProcessGroupBabyGloo, ProcessGroupGloo
 from torchft.work import _DummyWork
 
@@ -41,6 +41,7 @@ class TestDDP(TestCase):
 
         call_count = 0
 
+        # pyre-ignore[53]: Captured variable `manager` is not annotated.
         def allreduce(
             tensor: torch.Tensor,
         ) -> Work:
@@ -48,7 +49,8 @@ class TestDDP(TestCase):
 
             call_count += 1
 
-            return _DummyWork(tensor)
+            work = _DummyWork(tensor)
+            return _ManagedWork(manager, work, tensor)
 
         manager.allreduce = allreduce
 
