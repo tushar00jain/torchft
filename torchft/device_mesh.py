@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 
 import torch
+from torch._C._distributed_c10d import Backend as C10dBackend
 from torch.distributed import (
     DeviceMesh,
     ProcessGroup as BaseProcessGroup,
@@ -145,7 +146,13 @@ class ManagedDeviceMesh(DeviceMesh):
             assert self.mesh is not None
             return self.mesh.get_group(self._real_mesh_dim(dim))
 
-    def _flatten(self, mesh_dim_name: Optional[str]) -> "DeviceMesh":
+    def _flatten(
+        self,
+        mesh_dim_name: Optional[str] = None,
+        backend_override: Union[
+            None, str, C10dBackend.Options, tuple[str, C10dBackend.Options]
+        ] = None,
+    ) -> "DeviceMesh":
         flatten_mesh = _FlattenDeviceMesh(self)
         if mesh_dim_name is None:
             raise ValueError("ManagedDeviceMesh._flatten requires `mesh_dim_name`")
@@ -261,7 +268,13 @@ class _FlattenDeviceMesh(DeviceMesh):
     def get_group(self, mesh_dim: Optional[Union[int, str]] = None) -> BaseProcessGroup:
         raise NotImplementedError
 
-    def _flatten(self, mesh_dim_name: Optional[str]) -> "DeviceMesh":
+    def _flatten(
+        self,
+        mesh_dim_name: Optional[str] = None,
+        backend_override: Union[
+            None, str, C10dBackend.Options, tuple[str, C10dBackend.Options]
+        ] = None,
+    ) -> "DeviceMesh":
         raise NotImplementedError
 
     def size(self, mesh_dim: Optional[int] = None) -> int:
