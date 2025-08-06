@@ -418,7 +418,19 @@ class Manager:
             else:
                 work = self._pg.allreduce([tensor], ReduceOp.SUM)
 
-            return _ManagedWork(work, self, tensor, num_participants)
+            # schedule grad normalization as a continuation
+            # on the Future
+            @torch.profiler.record_function("torchft::manager::allreduce::callback")
+            def callback(
+                tensors: torch.futures.Future[list[torch.Tensor]],
+            ) -> list[torch.Tensor]:
+                nonlocal num_participants, tensor
+                tensor /= num_participants
+                return [tensor]
+
+            managed_work = _ManagedWork(work, self, [tensor])
+            managed_work.add_callback(callback)
+            return managed_work
 
         except Exception as e:
             self._logger.exception(
@@ -943,22 +955,56 @@ class _ManagerLogger:
         self._logger.exception(f"{self.prefix()} {msg}")
 
 
+class _SimpleFuture(torch.futures.Future[list[torch.Tensor]]):
+    def __init__(self, tensors: list[torch.Tensor]) -> None:
+        super().__init__()
+        self._tensors = tensors
+
+    def value(self) -> list[torch.Tensor]:
+        return self._tensors
+
+
+class _ManagedFuture(torch.futures.Future[list[torch.Tensor]]):
+    def __init__(self, work: "_ManagedWork") -> None:
+        super().__init__()
+        self._work = work
+
+    def then(
+        self,
+        callback: Callable[[torch.futures.Future[list[torch.Tensor]]], torch.futures.S],
+    ) -> torch.futures.Future[torch.futures.S]:
+        self._work.add_callback(
+            cast(
+                Callable[
+                    [torch.futures.Future[list[torch.Tensor]]], list[torch.Tensor]
+                ],
+                callback,
+            )
+        )
+        return cast(torch.futures.Future[torch.futures.S], self)
+
+    def wait(self) -> List[torch.Tensor]:
+        self._work.wait()
+        return self._work._tensors
+
+    def value(self) -> list[torch.Tensor]:
+        self._work.wait()
+        return self._work._tensors
+
+
 class _ManagedWork(dist._Work):
     def __init__(
         self,
         work: dist._Work,
         manager: Manager,
-        tensor: torch.Tensor,
-        num_participants: int,
+        tensors: list[torch.Tensor],
     ) -> None:
         super().__init__()
         self._manager = manager
         self._work = work
-        self._tensor = tensor
-        self._num_participants = num_participants
-        self._fut: Union[
-            torch.futures.Future[torch.Tensor], torch.futures.Future[None]
-        ] = work.get_future()
+        self._tensors = tensors
+        self._fut: torch.futures.Future[list[torch.Tensor]] = work.get_future()
+        self._managed_fut = _ManagedFuture(self)
 
         self._stream: Optional[torch.cuda.Stream] = (
             torch.cuda.current_stream() if torch.cuda.is_available() else None
@@ -966,39 +1012,63 @@ class _ManagedWork(dist._Work):
 
         self._is_set_future_callback_called = False
 
+        self._callbacks: list[
+            Callable[[torch.futures.Future[list[torch.Tensor]]], list[torch.Tensor]]
+        ] = []
+
+    def add_callback(
+        self,
+        callback: Callable[
+            [torch.futures.Future[list[torch.Tensor]]], list[torch.Tensor]
+        ],
+    ) -> None:
+        self._callbacks.append(callback)
+
     def _set_future_callback(
         self,
     ) -> None:
         if self._is_set_future_callback_called:
             return
 
-        # schedule grad normalization as a continuation
-        # on the Future
-        @torch.profiler.record_function("torchft::manager::allreduce::callback")
-        def callback(
-            fut: torch.futures.Future[List[torch.Tensor]],
-        ) -> torch.Tensor:
-            # change the stream to avoid making the callback stream
-            # dependent on process group stream running the allreduce
-            with (
-                torch.cuda.stream(self._stream)
-                if self._stream is not None
-                else nullcontext()
-            ):
-                # Setup stream dependency
-                fut.wait()
-                self._tensor /= self._num_participants
+        while self._callbacks:
+            user_callback: Callable[
+                [torch.futures.Future[list[torch.Tensor]]], list[torch.Tensor]
+            ] = self._callbacks.pop(0)
 
-                return self._tensor
+            def callback(
+                fut: torch.futures.Future[list[torch.Tensor]],
+            ) -> list[torch.Tensor]:
+                nonlocal user_callback
+                # change the stream to avoid making the callback stream
+                # dependent on process group stream running the allreduce
+                with (
+                    torch.cuda.stream(self._stream)
+                    if self._stream is not None
+                    else nullcontext()
+                ):
+                    # Setup stream dependency
+                    fut.wait()
+                    self._tensors = user_callback(
+                        cast(
+                            torch.futures.Future[list[torch.Tensor]],
+                            _SimpleFuture(self._tensors),
+                        )
+                    )
+                    return self._tensors
 
-        fut = self._fut
-        fut = fut.then(callback)
-        fut = self._manager.wrap_future(fut, self._tensor)
-        self._fut = fut
+            self._fut = self._fut.then(callback)
+
+        self._fut = self._manager.wrap_future(self._fut, self._tensors)
 
         self._is_set_future_callback_called = True
 
+    def _assert_same_stream(self) -> None:
+        if self._stream is not None:
+            assert self._stream == torch.cuda.current_stream()
+
     def wait(self, timeout: Optional[timedelta] = None) -> bool:
+        self._assert_same_stream()
+
         with (
             torch.cuda.stream(self._stream)
             if self._stream is not None
@@ -1018,6 +1088,8 @@ class _ManagedWork(dist._Work):
         return True
 
     def block_current_stream(self, timeout: Optional[timedelta] = None) -> None:
+        self._assert_same_stream()
+
         with (
             torch.cuda.stream(self._stream)
             if self._stream is not None
@@ -1028,6 +1100,8 @@ class _ManagedWork(dist._Work):
         self._set_future_callback()
 
     def synchronize(self) -> None:
+        self._assert_same_stream()
+
         if torch.cuda.is_available():
             self.block_current_stream()
         else:
@@ -1036,8 +1110,5 @@ class _ManagedWork(dist._Work):
 
     def get_future(
         self,
-    ) -> Union[torch.futures.Future[torch.Tensor], torch.futures.Future[None]]:
-        assert (
-            self._is_set_future_callback_called
-        ), "getting the future without calling synchronize() is unsafe"
-        return self._fut
+    ) -> torch.futures.Future[list[torch.Tensor]]:
+        return self._managed_fut
