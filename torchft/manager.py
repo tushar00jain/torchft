@@ -31,6 +31,7 @@ import os
 import socket
 import traceback
 import uuid
+import weakref
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from datetime import timedelta
@@ -1021,8 +1022,9 @@ class _ManagedFuture(torch.futures.Future[T]):
     Raises RuntimeError for methods that should not be called.
     """
 
-    def __init__(self, managed_work: "_ManagedWork") -> None:
+    def __init__(self, managed_work: weakref.ReferenceType["_ManagedWork"]) -> None:
         super().__init__()
+        # Store a weak reference to _ManagedWork to avoid reference cycles
         self._managed_work = managed_work
 
         # The underlying torch.futures.Future that this class delegates to
@@ -1045,9 +1047,12 @@ class _ManagedFuture(torch.futures.Future[T]):
         Since the callback returns a future, this method also creates a new future
         in the chain and also updates the tail of the chain in `_ManagedWork`.
         """
+        managed_work = self._managed_work()
+        assert managed_work is not None, "got garbage collected"
+
         self._callback = callback
         self._next = _ManagedFuture[object](self._managed_work)
-        self._managed_work._managed_fut_tail = self._next
+        managed_work._managed_fut_tail = self._next
         return cast(torch.futures.Future[S], self._next)
 
     def wait(self) -> T:
@@ -1096,7 +1101,7 @@ class _ManagedWork(dist._Work):
         self._value = value
 
         # The head of the callback chain
-        self._managed_fut_head = _ManagedFuture[object](self)
+        self._managed_fut_head = _ManagedFuture[object](weakref.ref(self))
 
         # The tail of the callback chain
         self._managed_fut_tail: _ManagedFuture[object] = self._managed_fut_head
