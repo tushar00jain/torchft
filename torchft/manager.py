@@ -31,6 +31,7 @@ import os
 import socket
 import traceback
 import uuid
+import weakref
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from datetime import timedelta
@@ -422,14 +423,15 @@ class Manager:
             # on the Future
             @torch.profiler.record_function("torchft::manager::allreduce::callback")
             def callback(
-                tensors: torch.futures.Future[list[torch.Tensor]],
-            ) -> list[torch.Tensor]:
+                fut: torch.futures.Future[list[torch.Tensor]],
+            ) -> torch.Tensor:
                 nonlocal num_participants, tensor
                 tensor /= num_participants
-                return [tensor]
+                return tensor
 
-            managed_work = _ManagedWork(work, self, [tensor])
-            managed_work.add_callback(callback)
+            managed_work = _ManagedWork(self, work, tensor)
+            fut = managed_work.get_future()
+            fut = fut.then(callback)
             return managed_work
 
         except Exception as e:
@@ -955,90 +957,189 @@ class _ManagerLogger:
         self._logger.exception(f"{self.prefix()} {msg}")
 
 
-class _SimpleFuture(torch.futures.Future[list[torch.Tensor]]):
-    def __init__(self, tensors: list[torch.Tensor]) -> None:
+T = TypeVar("T")
+S = TypeVar("S")
+
+
+class _SimpleFuture(torch.futures.Future[T]):
+    """
+    A simplified implementation of torch.futures.Future that wraps a value.
+
+    This class provides a minimal Future implementation that holds a pre-determined value.
+    It's primarily used as a wrapper for values in the callback chain of `_ManagedFuture`.
+    Most methods raise `RuntimeError` as they're not intended to be called.
+
+    This class is designed to be used only in specific contexts where we don't
+    want to call `value()` on the underlying `Future` as that would cause the CPU to block.
+    """
+
+    def __init__(self, value: T) -> None:
         super().__init__()
-        self._tensors = tensors
+        self._value = value
 
-    def value(self) -> list[torch.Tensor]:
-        return self._tensors
+    def value(self) -> T:
+        return self._value
+
+    def then(
+        self, callback: Callable[[torch.futures.Future[T]], S]
+    ) -> torch.futures.Future[S]:
+        raise RuntimeError("should not be called")
+
+    def wait(self) -> T:
+        raise RuntimeError("should not be called")
+
+    def done(self) -> bool:
+        raise RuntimeError("should not be called")
+
+    def add_done_callback(
+        self, callback: Callable[[torch.futures.Future[T]], None]
+    ) -> None:
+        raise RuntimeError("should not be called")
+
+    def set_result(self, result: T) -> None:
+        raise RuntimeError("should not be called")
+
+    def set_exception(self, result: T) -> None:
+        raise RuntimeError("should not be called")
 
 
-class _ManagedFuture(torch.futures.Future[list[torch.Tensor]]):
-    def __init__(self, work: "_ManagedWork") -> None:
+class _ManagedFuture(torch.futures.Future[T]):
+    """
+    A specialized Future implementation that works alongside `_ManagedWork`.
+
+    This class extends torch.futures.Future to provide future chaining that is
+    lazy - `then()` method simply stores the callback, which is only executed when
+    `wait()` is called on `_ManagedFuture` or `_ManagedWork`
+
+    Callback chains are implemented as a linked list of `_ManagedFuture` objects through the
+    `_next` attribute. When appending a callback to the chain, it also updates the tail of the
+    linked list stored in `_ManagedWork`.
+
+    Delegates actual future operations to an internal torch.futures.Future.
+
+    Raises RuntimeError for methods that should not be called.
+    """
+
+    def __init__(self, managed_work: weakref.ReferenceType["_ManagedWork"]) -> None:
         super().__init__()
-        self._work = work
+        # Store a weak reference to _ManagedWork to avoid reference cycles
+        self._managed_work = managed_work
+
+        # The underlying torch.futures.Future that this class delegates to
+        self._fut: Optional[torch.futures.Future[T]] = None
+
+        # The next future in the callback chain
+        self._next: Optional[_ManagedFuture[object]] = None
+
+        # The callback to be executed when the future is completed - this callback
+        # returns the next future in the chain
+        self._callback: Optional[Callable[[torch.futures.Future[T]], object]] = None
 
     def then(
         self,
-        callback: Callable[[torch.futures.Future[list[torch.Tensor]]], torch.futures.S],
-    ) -> torch.futures.Future[torch.futures.S]:
-        self._work.add_callback(
-            cast(
-                Callable[
-                    [torch.futures.Future[list[torch.Tensor]]], list[torch.Tensor]
-                ],
-                callback,
-            )
-        )
-        return cast(torch.futures.Future[torch.futures.S], self)
+        callback: Callable[[torch.futures.Future[T]], S],
+    ) -> torch.futures.Future[S]:
+        """
+        Sets the callback to be executed when the future is completed.
 
-    def wait(self) -> List[torch.Tensor]:
-        self._work.wait()
-        return self._work._tensors
+        Since the callback returns a future, this method also creates a new future
+        in the chain and also updates the tail of the chain in `_ManagedWork`.
+        """
+        managed_work = self._managed_work()
+        assert managed_work is not None, "got garbage collected"
 
-    def value(self) -> list[torch.Tensor]:
-        self._work.wait()
-        return self._work._tensors
+        self._callback = callback
+        self._next = _ManagedFuture[object](self._managed_work)
+        managed_work._managed_fut_tail = self._next
+        return cast(torch.futures.Future[S], self._next)
+
+    def wait(self) -> T:
+        assert self._fut
+        return self._fut.wait()
+
+    def value(self) -> T:
+        raise RuntimeError("should not be called")
+
+    def done(self) -> bool:
+        raise RuntimeError("should not be called")
+
+    def add_done_callback(
+        self, callback: Callable[[torch.futures.Future[T]], None]
+    ) -> None:
+        raise RuntimeError("should not be called")
+
+    def set_result(self, result: T) -> None:
+        raise RuntimeError("should not be called")
+
+    def set_exception(self, result: T) -> None:
+        raise RuntimeError("should not be called")
 
 
 class _ManagedWork(dist._Work):
+    """
+    A specialized `Work` implementation that works alongside `_ManagedFuture` to create
+    callback chains lazily. The callback chain is created when `wait()`, `block_current_stream()`
+    or `synchronize()` are called.
+    """
+
     def __init__(
         self,
-        work: dist._Work,
         manager: Manager,
-        tensors: list[torch.Tensor],
+        work: dist._Work,
+        value: object,
     ) -> None:
         super().__init__()
-        self._manager = manager
+        # Underlying `Work` retruned from process group operations
         self._work = work
-        self._tensors = tensors
-        self._fut: torch.futures.Future[list[torch.Tensor]] = work.get_future()
-        self._managed_fut = _ManagedFuture(self)
 
+        # Used to report errors to the manager through `wrap_future()`
+        self._manager = manager
+
+        # The value returned by the final future in the callback chain
+        self._value = value
+
+        # The head of the callback chain
+        self._managed_fut_head = _ManagedFuture[object](weakref.ref(self))
+
+        # The tail of the callback chain
+        self._managed_fut_tail: _ManagedFuture[object] = self._managed_fut_head
+
+        # The stream used to created the `Work` - we ensure all operations in the future
+        # callback chain are executed on this stream
         self._stream: Optional[torch.cuda.Stream] = (
             torch.cuda.current_stream() if torch.cuda.is_available() else None
         )
 
+        # To ensure the future callback chain is only created once
         self._is_set_future_callback_called = False
-
-        self._callbacks: list[
-            Callable[[torch.futures.Future[list[torch.Tensor]]], list[torch.Tensor]]
-        ] = []
-
-    def add_callback(
-        self,
-        callback: Callable[
-            [torch.futures.Future[list[torch.Tensor]]], list[torch.Tensor]
-        ],
-    ) -> None:
-        self._callbacks.append(callback)
 
     def _set_future_callback(
         self,
     ) -> None:
+        """
+        Sets up the stored future callback chain.
+
+        This method creates a chain of callbacks for the futures in the managed work,
+        ensuring that each callback is executed in the proper order and with the
+        appropriate stream context. It also wraps the futures with error handling
+        through the manager's `wrap_future` method.
+
+        The method is called internally when waiting or synchronizing on the work.
+        """
         if self._is_set_future_callback_called:
             return
 
-        while self._callbacks:
-            user_callback: Callable[
-                [torch.futures.Future[list[torch.Tensor]]], list[torch.Tensor]
-            ] = self._callbacks.pop(0)
+        managed_fut: _ManagedFuture[object] = self._managed_fut_head
+        managed_fut._fut = self._work.get_future()
+        value = self._value
+
+        is_future_wrapped = False
+        while managed_fut._next:
 
             def callback(
-                fut: torch.futures.Future[list[torch.Tensor]],
-            ) -> list[torch.Tensor]:
-                nonlocal user_callback
+                fut: torch.futures.Future[object],
+            ) -> object:
+                nonlocal managed_fut, value
                 # change the stream to avoid making the callback stream
                 # dependent on process group stream running the allreduce
                 with (
@@ -1048,21 +1149,33 @@ class _ManagedWork(dist._Work):
                 ):
                     # Setup stream dependency
                     fut.wait()
-                    self._tensors = user_callback(
-                        cast(
-                            torch.futures.Future[list[torch.Tensor]],
-                            _SimpleFuture(self._tensors),
-                        )
+                    assert managed_fut._callback
+                    value = managed_fut._callback(
+                        _SimpleFuture(value),
                     )
-                    return self._tensors
+                    return value
 
-            self._fut = self._fut.then(callback)
+            assert managed_fut._fut
+            fut = managed_fut._fut.then(callback)
+            assert managed_fut._next
+            managed_fut = managed_fut._next
+            managed_fut._fut = fut
 
-        self._fut = self._manager.wrap_future(self._fut, self._tensors)
+            if is_future_wrapped:
+                continue
 
+            managed_fut._fut = self._manager.wrap_future(managed_fut._fut, value)
+            is_future_wrapped = True
+
+        self._value = value
         self._is_set_future_callback_called = True
 
     def _assert_same_stream(self) -> None:
+        """
+        Asserts that the current CUDA stream is the same as the one used to create this work.
+
+        This makes sure users of the API are aware about stream dependencies.
+        """
         if self._stream is not None:
             assert self._stream == torch.cuda.current_stream()
 
@@ -1075,15 +1188,14 @@ class _ManagedWork(dist._Work):
             else nullcontext()
         ):
             self._work.wait()
-
-        self._set_future_callback()
+            self._set_future_callback()
 
         with (
             torch.cuda.stream(self._stream)
             if self._stream is not None
             else nullcontext()
         ):
-            self._fut.wait()
+            self._managed_fut_tail.wait()
 
         return True
 
@@ -1110,5 +1222,11 @@ class _ManagedWork(dist._Work):
 
     def get_future(
         self,
-    ) -> torch.futures.Future[list[torch.Tensor]]:
-        return self._managed_fut
+    ) -> torch.futures.Future[object]:
+        """
+        Returns:
+            The tail of the managed future chain, which represents the final
+            result of all the chained operations. This future will be completed when
+            all the work and its callbacks have been executed.
+        """
+        return self._managed_fut_tail
