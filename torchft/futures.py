@@ -1,4 +1,5 @@
 import asyncio
+import os
 import queue
 import sys
 import threading
@@ -14,6 +15,8 @@ from torch.futures import Future
 from torchft.utils import get_stream_context
 
 T = TypeVar("T")
+
+WATCHDOG_TIMEOUT_SEC = "TORCHFT_WATCHDOG_TIMEOUT_SEC"
 
 
 class _TimerHandle:
@@ -61,7 +64,9 @@ class _TimeoutManager:
 
         # Give this much time the the `_event_loop_thread` to confirm that
         # it is not stuck
-        self._watchdog_interval = timedelta(seconds=30)
+        self._watchdog_interval = timedelta(
+            seconds=int(os.environ.get(WATCHDOG_TIMEOUT_SEC, "30"))
+        )
 
         # This queue is used to delete events on the main thread as cudaEventDestroy
         # can block if the CUDA queue is full.
