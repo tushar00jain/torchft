@@ -19,6 +19,7 @@ runtime users need to take care to not assume a static rank or world size.
 import logging
 import os
 import threading
+import time
 import warnings
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
@@ -84,6 +85,25 @@ _FUTURE_EXCEPTION = "fut_exception"
 
 
 T = TypeVar("T")
+
+TORCH_NCCL_DEBUG_INFO_PIPE_FILE_ENV_VAR = "TORCH_NCCL_DEBUG_INFO_PIPE_FILE"
+
+
+def trigger_nccl_fr_trace_through_pipe(rank: int) -> bool:
+    """Collect NCCL flight recorder trace through the pipe."""
+    dump_file_prefix = os.environ.get(TORCH_NCCL_DEBUG_INFO_PIPE_FILE_ENV_VAR, "")
+    if not dump_file_prefix:
+        logging.info(
+            f"[rank {rank}] Triggering FR trace dump through pipe failed: pipe is not enabled."
+        )
+        return False
+    pipe_name = f"{dump_file_prefix}{rank}.pipe"
+    with open(pipe_name, "w") as f:
+        # Trigger fr trace dump through pipe
+        logging.info(f"[rank {rank}] Triggering FR trace dump through pipe...")
+        f.write("1\n")
+        time.sleep(60)
+    return True
 
 
 def create_store_client(store_addr: str, timeout: timedelta) -> Store:
@@ -716,6 +736,7 @@ class ProcessGroupNCCL(ProcessGroupWrapper):
         self._use_abort: bool = torch.cuda.nccl.version() >= (2, 25)
 
         self._errored: Optional[Exception] = None
+        self._rank: int = 0
 
         NONBLOCKING_TIMEOUT_ENV = "TORCH_NCCL_NONBLOCKING_TIMEOUT"
         if NONBLOCKING_TIMEOUT_ENV not in os.environ:
@@ -765,6 +786,7 @@ class ProcessGroupNCCL(ProcessGroupWrapper):
         from torch.distributed import ProcessGroupNCCL as BaseProcessGroupNCCL
 
         self._errored = None
+        self._rank = rank
 
         # pyre-fixme[16]: no attribute ProcessGroupNCCL
         opts = BaseProcessGroupNCCL.Options()
@@ -787,6 +809,7 @@ class ProcessGroupNCCL(ProcessGroupWrapper):
         # We need to set the error before aborting to ensure that errored()
         # returns the error correctly when NCCL abort fires and unblocks the
         # stream.
+        trigger_nccl_fr_trace_through_pipe(self._rank)
         self._errored = RuntimeError("aborted")
 
         super().abort()
