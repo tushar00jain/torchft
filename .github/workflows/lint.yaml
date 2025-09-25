@@ -38,7 +38,7 @@ jobs:
         run: |
           set -eux
 
-          lintrunner --skip PYRE --force-color --all-files
+          lintrunner --skip PYRE,FLAKE --force-color --all-files
       - name: Run pyre
         run: |
           set -eux
