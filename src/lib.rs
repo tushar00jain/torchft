@@ -10,36 +10,41 @@ mod net;
 mod retry;
 mod timeout;
 
-use anyhow::Result;
-use atty::Stream;
 use core::time::Duration;
-use pyo3::exceptions::{PyRuntimeError, PyTimeoutError};
 use std::cmp;
 use std::env;
 use std::sync::Arc;
 use std::thread::available_parallelism;
+
+use anyhow::Result;
+use atty::Stream;
+use chrono::Local;
+use fern::colors::Color;
+use fern::colors::ColoredLevelConfig;
+use log::LevelFilter;
+use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::PyTimeoutError;
 use structopt::StructOpt;
 use tokio::runtime::Runtime;
 use tokio::task::JoinHandle;
-use tonic::transport::Channel;
 use tonic::Status;
-
-use chrono::Local;
-use fern::colors::{Color, ColoredLevelConfig};
-use log::LevelFilter;
+use tonic::transport::Channel;
 
 pub mod torchftpb {
     tonic::include_proto!("torchft");
 }
 
+use pyo3::prelude::*;
+use pyo3::types::PyDict;
+use pyo3::types::PyString;
+
+use crate::torchftpb::CheckpointMetadataRequest;
+use crate::torchftpb::LighthouseHeartbeatRequest;
+use crate::torchftpb::LighthouseQuorumRequest;
+use crate::torchftpb::ManagerQuorumRequest;
+use crate::torchftpb::ShouldCommitRequest;
 use crate::torchftpb::lighthouse_service_client::LighthouseServiceClient;
 use crate::torchftpb::manager_service_client::ManagerServiceClient;
-use crate::torchftpb::{
-    CheckpointMetadataRequest, LighthouseHeartbeatRequest, LighthouseQuorumRequest,
-    ManagerQuorumRequest, ShouldCommitRequest,
-};
-use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyString};
 
 // Get the number of threads to use for the tokio runtime
 fn num_threads() -> usize {
@@ -115,8 +120,8 @@ impl ManagerServer {
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
             let handle = runtime.spawn(manager.clone().run());
             Ok(Self {
-                handle: handle,
-                manager: manager,
+                handle,
+                manager,
                 _runtime: runtime,
             })
         })
@@ -165,10 +170,7 @@ impl ManagerClient {
                 .block_on(manager::manager_client_new(addr, connect_timeout))
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
-            Ok(Self {
-                runtime: runtime,
-                client: client,
-            })
+            Ok(Self { runtime, client })
         })
     }
 
@@ -185,12 +187,12 @@ impl ManagerClient {
     ) -> Result<QuorumResult, StatusError> {
         py.allow_threads(move || {
             let mut request = tonic::Request::new(ManagerQuorumRequest {
-                group_rank: group_rank,
-                step: step,
-                checkpoint_metadata: checkpoint_metadata,
-                shrink_only: shrink_only,
-                init_sync: init_sync,
-                commit_failures: commit_failures,
+                group_rank,
+                step,
+                checkpoint_metadata,
+                shrink_only,
+                init_sync,
+                commit_failures,
             });
 
             // This timeout is processed on the server side so we also enable
@@ -222,7 +224,7 @@ impl ManagerClient {
         timeout: Duration,
     ) -> Result<String, StatusError> {
         py.allow_threads(move || {
-            let mut request = tonic::Request::new(CheckpointMetadataRequest { rank: rank });
+            let mut request = tonic::Request::new(CheckpointMetadataRequest { rank });
 
             // This timeout is processed on the server side so we also enable
             // keep alives to detect server health.
@@ -260,9 +262,9 @@ impl ManagerClient {
     ) -> Result<bool, StatusError> {
         py.allow_threads(move || {
             let mut request = tonic::Request::new(ShouldCommitRequest {
-                group_rank: group_rank,
-                step: step,
-                should_commit: should_commit,
+                group_rank,
+                step,
+                should_commit,
             });
 
             // This notifies the server about the timeout but doesn't affect the
@@ -466,7 +468,7 @@ fn convert_quorum(py: Python, q: &torchftpb::Quorum) -> PyResult<Quorum> {
 
     Ok(Quorum {
         quorum_id: q.quorum_id,
-        participants: participants,
+        participants,
         created: Timestamp::from(q.created.unwrap()),
     })
 }
@@ -498,10 +500,7 @@ impl LighthouseClient {
             let client = runtime
                 .block_on(manager::lighthouse_client_new(addr, connect_timeout))
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-            Ok(Self {
-                client: client,
-                runtime: runtime,
-            })
+            Ok(Self { client, runtime })
         })
     }
 
@@ -545,12 +544,12 @@ impl LighthouseClient {
         let quorum: Result<torchftpb::Quorum, StatusError> = py.allow_threads(move || {
             let mut request = tonic::Request::new(LighthouseQuorumRequest {
                 requester: Some(torchftpb::QuorumMember {
-                    replica_id: replica_id,
-                    address: address,
-                    store_address: store_address,
-                    step: step,
-                    world_size: world_size,
-                    shrink_only: shrink_only,
+                    replica_id,
+                    address,
+                    store_address,
+                    step,
+                    world_size,
+                    shrink_only,
                     data: data_string,
                     commit_failures: 0,
                 }),
@@ -636,17 +635,17 @@ impl LighthouseServer {
 
             let lighthouse = rt
                 .block_on(lighthouse::Lighthouse::new(lighthouse::LighthouseOpt {
-                    bind: bind,
-                    min_replicas: min_replicas,
-                    join_timeout_ms: join_timeout_ms,
-                    quorum_tick_ms: quorum_tick_ms,
-                    heartbeat_timeout_ms: heartbeat_timeout_ms,
+                    bind,
+                    min_replicas,
+                    join_timeout_ms,
+                    quorum_tick_ms,
+                    heartbeat_timeout_ms,
                 }))
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
             Ok(Self {
                 handle: rt.spawn(lighthouse.clone().run()),
-                lighthouse: lighthouse,
+                lighthouse,
                 _runtime: rt,
             })
         })

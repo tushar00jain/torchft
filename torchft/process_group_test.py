@@ -9,8 +9,8 @@ import os
 import sys
 from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 from datetime import timedelta
-from typing import Any, Callable, Dict, List, cast
-from unittest import TestCase, skipIf, skipUnless
+from typing import Any, Callable, cast, Dict, List
+from unittest import skipIf, skipUnless, TestCase
 from unittest.mock import Mock, patch
 
 import torch
@@ -18,6 +18,7 @@ import torch.distributed as dist
 from parameterized import parameterized
 from torch import nn
 from torch._C._distributed_c10d import (
+    _resolve_process_group,
     AllgatherOptions,
     AllreduceCoalescedOptions,
     AllreduceOptions,
@@ -26,19 +27,21 @@ from torch._C._distributed_c10d import (
     BroadcastOptions,
     ReduceOp,
     ReduceScatterOptions,
-    _resolve_process_group,
 )
 from torch.distributed import (
-    ReduceOp,
-    TCPStore,
     _functional_collectives,
     get_world_size,
+    ReduceOp,
+    TCPStore,
 )
 from torch.distributed.device_mesh import init_device_mesh
 
 from torchft.manager import Manager
 from torchft.process_group import (
+    _ErrorSwallowingWork,
     ErrorSwallowingProcessGroupWrapper,
+    extend_device_mesh,
+    ft_init_device_mesh,
     ManagedProcessGroup,
     ProcessGroup,
     ProcessGroupBabyGloo,
@@ -47,9 +50,6 @@ from torchft.process_group import (
     ProcessGroupGloo,
     ProcessGroupNCCL,
     ProcessGroupWrapper,
-    _ErrorSwallowingWork,
-    extend_device_mesh,
-    ft_init_device_mesh,
 )
 from torchft.work import _DummyWork
 

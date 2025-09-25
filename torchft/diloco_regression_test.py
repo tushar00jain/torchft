@@ -5,12 +5,12 @@ import logging
 import os
 import sys
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed, ThreadPoolExecutor
 from contextlib import ExitStack
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, cast, overload
-from unittest import TestCase, skipIf
+from typing import Any, Callable, cast, Dict, List, Optional, overload, Tuple
+from unittest import skipIf, TestCase
 
 import torch
 from parameterized import parameterized
