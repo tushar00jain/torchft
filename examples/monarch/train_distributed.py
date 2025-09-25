@@ -16,7 +16,7 @@ from typing import Dict
 import torch
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec
 from monarch._src.actor.allocator import RemoteAllocator, TorchXRemoteAllocInitializer
-from monarch.actor import Actor, ProcMesh, current_rank, endpoint, this_host
+from monarch.actor import Actor, current_rank, endpoint, ProcMesh, this_host
 from monarch.tools import commands
 from monarch.tools.components import hyperactor
 from monarch.tools.config import Config

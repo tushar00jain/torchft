@@ -4,7 +4,7 @@ import random
 import time
 
 from torchx import specs
-from torchx.runner import Runner, get_runner
+from torchx.runner import get_runner, Runner
 
 logging.basicConfig(level=logging.INFO)
 logger: logging.Logger = logging.getLogger(__name__)

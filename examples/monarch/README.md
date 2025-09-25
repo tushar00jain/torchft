@@ -1,6 +1,6 @@
 ### Monarch-TorchFT-TorchTitan Distributed Training Orchestrator
 
-#### Overview 
+#### Overview
 This script orchestrates fault-tolerant distributed training using TorchTitan and TorchMonarch
 frameworks. It manages multiple training replicas across SLURM-scheduled compute nodes
 with automatic failure recovery and TorchFT lighthouse coordination.

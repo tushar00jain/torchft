@@ -1,13 +1,13 @@
 import threading
 import traceback
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed, ThreadPoolExecutor
 from datetime import timedelta
 from typing import Callable
 from unittest import TestCase
 
 import torch
 import torch.distributed as dist
-from torch.distributed.tensor import DeviceMesh, DTensor, distribute_tensor
+from torch.distributed.tensor import DeviceMesh, distribute_tensor, DTensor
 
 from torchft.checkpointing.transport import CheckpointTransport
 

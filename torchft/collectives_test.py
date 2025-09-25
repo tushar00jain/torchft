@@ -6,7 +6,7 @@
 
 import unittest
 from typing import Callable
-from unittest import TestCase, skipUnless
+from unittest import skipUnless, TestCase
 
 import torch
 import torch.distributed as dist
