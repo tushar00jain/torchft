@@ -8,6 +8,7 @@ LocalSGD
 =========
 This module implements a fault tolerant version of LocalSGD and related methods.
 """
+
 import logging
 import math
 from contextlib import nullcontext

@@ -4,7 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-from unittest import TestCase, skipUnless
+from unittest import skipUnless, TestCase
 
 import torch
 from parameterized import parameterized
@@ -33,7 +33,6 @@ else:
         "CUDA is required for this test",
     )
     class QuantizationTest(TestCase):
-
         def run_test(
             self,
             world_size: int,

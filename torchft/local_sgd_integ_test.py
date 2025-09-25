@@ -5,17 +5,17 @@ import re
 import sys
 import threading
 import traceback
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed, ThreadPoolExecutor
 from contextlib import ExitStack
 from dataclasses import field
 from datetime import timedelta
-from typing import Any, Dict, cast
-from unittest import TestCase, skipIf
+from typing import Any, cast, Dict
+from unittest import skipIf, TestCase
 
 import torch
 from parameterized import parameterized
 from torch import nn, optim
-from torch.distributed.pipelining import SplitPoint, pipeline
+from torch.distributed.pipelining import pipeline, SplitPoint
 from torch.distributed.tensor import DTensor, Replicate
 
 from torchft._test.diloco_trainer import DiLoCoTrainer, MultiMyModel
@@ -116,7 +116,6 @@ def diloco_train_loop(
     runner: Runner,
     train_loop_args: dict[str, Any] = {},
 ) -> Dict[str, Dict[str, object]]:
-
     model_state_dict = train_loop_args.get("model_state_dict", {})
     n_fragments = train_loop_args.get("n_fragments", 1)
     diloco_args = train_loop_args.get("diloco_args", {})

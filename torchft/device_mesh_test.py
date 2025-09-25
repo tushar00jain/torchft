@@ -16,9 +16,9 @@ import torch.distributed as dist
 
 from torchft.manager import Manager
 from torchft.process_group import (
+    ft_init_device_mesh,
     ManagedProcessGroup,
     ProcessGroupGloo,
-    ft_init_device_mesh,
 )
 
 

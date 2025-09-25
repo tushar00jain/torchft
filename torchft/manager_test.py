@@ -10,7 +10,7 @@ import time
 from datetime import timedelta
 from typing import Optional
 from unittest import TestCase
-from unittest.mock import MagicMock, create_autospec, patch
+from unittest.mock import create_autospec, MagicMock, patch
 
 import torch
 from torch.distributed import TCPStore
@@ -18,7 +18,7 @@ from torch.distributed import TCPStore
 from torchft._torchft import QuorumResult
 from torchft.checkpointing._rwlock import RWLock
 from torchft.checkpointing.transport import CheckpointTransport
-from torchft.manager import MANAGER_ADDR_KEY, REPLICA_ID_KEY, Manager, WorldSizeMode
+from torchft.manager import Manager, MANAGER_ADDR_KEY, REPLICA_ID_KEY, WorldSizeMode
 from torchft.process_group import ProcessGroup
 from torchft.work import _DummyWork
 

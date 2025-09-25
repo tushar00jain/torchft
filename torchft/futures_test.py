@@ -1,6 +1,6 @@
 import threading
 from datetime import timedelta
-from unittest import TestCase, skipUnless
+from unittest import skipUnless, TestCase
 from unittest.mock import Mock, patch
 
 import torch
