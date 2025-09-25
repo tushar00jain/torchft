@@ -7,7 +7,7 @@
 import urllib.error
 from datetime import timedelta
 from typing import Dict
-from unittest import TestCase, skipUnless
+from unittest import skipUnless, TestCase
 from unittest.mock import MagicMock
 
 import torch

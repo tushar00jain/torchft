@@ -1,7 +1,9 @@
-use anyhow::Result;
 use std::future::Future;
 use std::pin::Pin;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use std::time::Instant;
+
+use anyhow::Result;
 
 pub struct ExponentialBackoff {
     pub initial_backoff: Duration,
@@ -42,9 +44,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::sync::Arc;
     use std::sync::Mutex;
+
+    use super::*;
 
     #[tokio::test]
     async fn test_retry_backoff() -> Result<()> {

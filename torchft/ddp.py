@@ -14,7 +14,7 @@ Manager to provide fault tolerance.
 
 import os
 import sys
-from typing import TYPE_CHECKING, Optional, cast
+from typing import cast, Optional, TYPE_CHECKING
 from unittest.mock import patch
 
 import torch
@@ -26,7 +26,7 @@ from torch.nn import parallel
 from torchft.process_group import ProcessGroup, ProcessGroupDummy, ProcessGroupGloo
 
 if TYPE_CHECKING:
-    from torchft.manager import Manager, _ManagedFuture
+    from torchft.manager import _ManagedFuture, Manager
 
 
 class DistributedDataParallel(parallel.DistributedDataParallel):

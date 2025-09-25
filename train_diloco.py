@@ -22,7 +22,7 @@ import torchvision
 import torchvision.transforms as transforms
 from torch import nn, optim
 from torch.distributed.elastic.multiprocessing.errors import record
-from torch.distributed.pipelining import SplitPoint, pipeline
+from torch.distributed.pipelining import pipeline, SplitPoint
 from torch.export import export
 from torch.utils.tensorboard import SummaryWriter
 from torchdata.stateful_dataloader import StatefulDataLoader

@@ -5,12 +5,12 @@ import logging
 import os
 import sys
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed, ThreadPoolExecutor
 from contextlib import ExitStack
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, cast, overload
-from unittest import TestCase, skipIf
+from typing import Any, Callable, cast, Dict, List, Optional, overload, Tuple
+from unittest import skipIf, TestCase
 
 import torch
 from parameterized import parameterized
@@ -226,7 +226,7 @@ class MockDiLoCoTrainer(DiLoCoTrainer):
                         )
                         parameter_history["global_parameter_history"][local_step][
                             f"layers.{i}.weight"
-                        ] = (value["weight"].data.clone().detach().cpu().tolist())
+                        ] = value["weight"].data.clone().detach().cpu().tolist()
 
                     manager_steps.add(manager_curr_step)
 
