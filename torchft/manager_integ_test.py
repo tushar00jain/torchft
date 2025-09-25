@@ -4,13 +4,14 @@ import threading
 import time
 import traceback
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import ExitStack, contextmanager
+from concurrent.futures import as_completed, ThreadPoolExecutor
+from contextlib import contextmanager, ExitStack
 from dataclasses import dataclass, field
 from datetime import timedelta
-from enum import Enum, auto
+from enum import auto, Enum
 from typing import (
     Any,
+    cast,
     Dict,
     Generator,
     List,
@@ -19,7 +20,6 @@ from typing import (
     Set,
     Tuple,
     TypeVar,
-    cast,
 )
 from unittest import TestCase
 

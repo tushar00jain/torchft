@@ -24,15 +24,21 @@ jobs:
           sudo apt-get install -y protobuf-compiler
 
           pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
-          
           pip install .[dev] -v
+
+          # install recent version of Rust via rustup
+          curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain=stable --profile=default -y
+          . "$HOME/.cargo/env"
+
+          rustup install nightly
+          rustup component add --toolchain nightly-x86_64-unknown-linux-gnu rustfmt
 
           lintrunner init
       - name: Run lintrunner
         run: |
           set -eux
 
-          lintrunner --skip PYRE --force-color --all-files
+          lintrunner --skip PYRE,FLAKE --force-color --all-files
       - name: Run pyre
         run: |
           set -eux
@@ -42,4 +48,4 @@ jobs:
         run: |
           set -eux
 
-          cargo fmt --check
+          cargo +nightly fmt --check

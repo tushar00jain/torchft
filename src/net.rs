@@ -1,9 +1,11 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use tonic::transport::{Channel, Endpoint};
+use tonic::transport::Channel;
+use tonic::transport::Endpoint;
 
-use crate::retry::{retry_backoff, ExponentialBackoff};
+use crate::retry::ExponentialBackoff;
+use crate::retry::retry_backoff;
 
 pub async fn connect_once(addr: String, connect_timeout: Duration) -> Result<Channel> {
     let conn = Endpoint::new(addr)?

@@ -5,7 +5,8 @@
 // LICENSE file in the root directory of this source tree.
 
 use structopt::StructOpt;
-use torchft::lighthouse::{Lighthouse, LighthouseOpt};
+use torchft::lighthouse::Lighthouse;
+use torchft::lighthouse::LighthouseOpt;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() {

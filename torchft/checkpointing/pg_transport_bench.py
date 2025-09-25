@@ -6,7 +6,7 @@ from datetime import timedelta
 import torch
 import torch.distributed as dist
 
-from torchft.checkpointing.pg_transport import PGTransport, _timeit
+from torchft.checkpointing.pg_transport import _timeit, PGTransport
 from torchft.process_group import ProcessGroupBabyNCCL
 
 logger: logging.Logger = logging.getLogger(__name__)

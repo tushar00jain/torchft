@@ -254,7 +254,14 @@ def reduce_scatter_quantized(
         fut = work.get_future()
 
         def callback(fut: Future[list[torch.Tensor]]) -> None:
-            nonlocal inputs, quantized_inputs_out, world_size, sync_stream, rank, reduce_outputs, reducescatter_opts
+            nonlocal \
+                inputs, \
+                quantized_inputs_out, \
+                world_size, \
+                sync_stream, \
+                rank, \
+                reduce_outputs, \
+                reducescatter_opts
 
             with torch.cuda.stream(sync_stream):
                 # Setup stream dependency

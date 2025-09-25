@@ -6,15 +6,15 @@
 
 from typing import Dict
 from unittest import TestCase
-from unittest.mock import MagicMock, create_autospec
+from unittest.mock import create_autospec, MagicMock
 
 import torch
 from parameterized import parameterized
-from torch import Tensor, nn, optim
+from torch import nn, optim, Tensor
 from torch.distributed.distributed_c10d import Work
 from torch.distributed.tensor import DTensor
 
-from torchft.local_sgd import DiLoCo, LocalSGD, extract_local_tensor
+from torchft.local_sgd import DiLoCo, extract_local_tensor, LocalSGD
 from torchft.manager import Manager
 from torchft.work import _DummyWork
 
