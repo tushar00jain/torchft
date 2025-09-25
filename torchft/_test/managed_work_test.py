@@ -7,7 +7,7 @@
 import types
 import unittest
 from datetime import timedelta
-from typing import Callable, Dict, List, Optional, Tuple, TypeVar, cast
+from typing import Callable, cast, Dict, List, Optional, Tuple, TypeVar
 
 # Define a type variable for the Future's value type
 T = TypeVar("T")
@@ -17,7 +17,7 @@ import torch
 from torch.distributed.distributed_c10d import Work
 from torch.futures import Future
 
-from torchft.manager import Manager, _ManagedWork
+from torchft.manager import _ManagedWork, Manager
 
 
 class SimpleWork(Work):
@@ -278,7 +278,7 @@ class TestManagedWork(unittest.TestCase):
         # Second callback: Takes Dict[str, Tensor] and returns Tuple[Tensor, float]
         # Uses Future.value() to modify tensor2
         def callback2(
-            fut: Future[Dict[str, torch.Tensor]]
+            fut: Future[Dict[str, torch.Tensor]],
         ) -> Tuple[torch.Tensor, float]:
             data = fut.value()
             # Modify tensor2 in-place using the value from the future

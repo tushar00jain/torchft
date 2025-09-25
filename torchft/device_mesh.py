@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, TYPE_CHECKING, Union
 
 import torch
 from torch._C._distributed_c10d import Backend as C10dBackend
 from torch.distributed import (
     DeviceMesh,
-    ProcessGroup as BaseProcessGroup,
     get_rank,
     init_device_mesh,
+    ProcessGroup as BaseProcessGroup,
 )
 from torch.distributed.tensor.device_mesh import _mesh_resources
 

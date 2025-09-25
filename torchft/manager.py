@@ -37,16 +37,16 @@ from contextlib import nullcontext
 from datetime import timedelta
 from enum import Enum
 from typing import (
-    TYPE_CHECKING,
     Any,
     Callable,
+    cast,
     Dict,
     List,
     Optional,
+    TYPE_CHECKING,
     TypeAlias,
     TypeVar,
     Union,
-    cast,
 )
 
 import torch

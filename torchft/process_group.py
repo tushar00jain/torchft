@@ -26,17 +26,17 @@ from dataclasses import dataclass
 from datetime import timedelta
 from multiprocessing.connection import Connection
 from typing import (
-    TYPE_CHECKING,
     Any,
     Callable,
+    cast,
     Dict,
     Generator,
     List,
     Optional,
     Tuple,
+    TYPE_CHECKING,
     TypeVar,
     Union,
-    cast,
 )
 
 import torch
@@ -1306,7 +1306,7 @@ class _FutureMetadata:
 
 
 def _maybe_share_tensors(
-    tensor: Union[List[List[torch.Tensor]], List[torch.Tensor], torch.Tensor]
+    tensor: Union[List[List[torch.Tensor]], List[torch.Tensor], torch.Tensor],
 ) -> None:
     """Move a tensor / list of tensors to shared memory if not already in shared memory."""
     if isinstance(tensor, list):

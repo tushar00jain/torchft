@@ -31,11 +31,11 @@ import warnings
 from importlib.metadata import version
 
 import pytorch_sphinx_theme2
+
+import torchft
 from docutils import nodes
 from sphinx import addnodes
 from sphinx.util.docfields import TypedField
-
-import torchft
 
 FBCODE = "fbcode" in os.getcwd()
 
@@ -236,9 +236,7 @@ def setup(app):
 
     # In Sphinx 1.8 it was renamed to `add_css_file`, 1.7 and prior it is
     # `add_stylesheet` (deprecated in 1.8).
-    add_css = getattr(
-        app, "add_css_file", getattr(app, "add_stylesheet", None)
-    )  # noqa B009
+    add_css = getattr(app, "add_css_file", getattr(app, "add_stylesheet", None))  # noqa B009
     for css_file in html_css_files:
         add_css(css_file)
 

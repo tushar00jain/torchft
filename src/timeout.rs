@@ -1,7 +1,9 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use tonic::metadata::{Ascii, MetadataMap, MetadataValue};
+use tonic::metadata::Ascii;
+use tonic::metadata::MetadataMap;
+use tonic::metadata::MetadataValue;
 
 const GRPC_TIMEOUT_HEADER: &str = "grpc-timeout";
 const SECONDS_IN_HOUR: u64 = 60 * 60;
@@ -79,9 +81,11 @@ mod tests {
         assert!(try_parse_grpc_timeout(&map("3u")).unwrap() == Some(Duration::from_micros(3)));
         assert!(try_parse_grpc_timeout(&map("3n")).unwrap() == Some(Duration::from_nanos(3)));
 
-        assert!(try_parse_grpc_timeout(&MetadataMap::new())
-            .unwrap()
-            .is_none());
+        assert!(
+            try_parse_grpc_timeout(&MetadataMap::new())
+                .unwrap()
+                .is_none()
+        );
         assert!(try_parse_grpc_timeout(&map("")).is_err());
     }
 }

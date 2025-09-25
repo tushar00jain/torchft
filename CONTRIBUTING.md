@@ -63,6 +63,7 @@ We actively welcome your pull requests.
 pip install lintrunner lintrunner-adapters
 lintrunner init
 lintrunner -a
+cargo +nightly fmt
 ```
 
 ### Tests
