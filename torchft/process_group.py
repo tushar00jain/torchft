@@ -738,7 +738,6 @@ class ProcessGroupNCCL(ProcessGroupWrapper):
         self._use_abort: bool = torch.cuda.nccl.version() >= (2, 25)
 
         self._errored: Optional[Exception] = None
-        self._rank: int = 0
 
         NONBLOCKING_TIMEOUT_ENV = "TORCH_NCCL_NONBLOCKING_TIMEOUT"
         if NONBLOCKING_TIMEOUT_ENV not in os.environ:
@@ -788,7 +787,6 @@ class ProcessGroupNCCL(ProcessGroupWrapper):
         from torch.distributed import ProcessGroupNCCL as BaseProcessGroupNCCL
 
         self._errored = None
-        self._rank = rank
 
         # pyre-fixme[16]: no attribute ProcessGroupNCCL
         opts = BaseProcessGroupNCCL.Options()
@@ -812,7 +810,7 @@ class ProcessGroupNCCL(ProcessGroupWrapper):
         # returns the error correctly when NCCL abort fires and unblocks the
         # stream.
         if os.environ.get("TORCHFT_TRIGGER_FR_ON_ABORT", "true") == "true":
-            trigger_nccl_fr_trace_through_pipe(self._rank)
+            trigger_nccl_fr_trace_through_pipe(dist.get_rank())
         self._errored = RuntimeError("aborted")
 
         super().abort()
