@@ -13,10 +13,10 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
 from datetime import timedelta
 from http.server import BaseHTTPRequestHandler
-from typing import Generator, List, Optional, TypeVar, cast
+from typing import cast, Generator, List, Optional, TypeVar
 
 import torch
-from torch.utils._pytree import TreeSpec, tree_flatten, tree_unflatten
+from torch.utils._pytree import tree_flatten, tree_unflatten, TreeSpec
 
 from torchft.checkpointing._rwlock import RWLock
 from torchft.checkpointing._serialization import _streaming_load, _streaming_save
@@ -152,9 +152,10 @@ class HTTPTransport(CheckpointTransport[T]):
         msg = f"fetching checkpoint from {address}"
         logger.info(msg)
 
-        with _time(msg), urllib.request.urlopen(
-            address, timeout=timeout.total_seconds()
-        ) as f:
+        with (
+            _time(msg),
+            urllib.request.urlopen(address, timeout=timeout.total_seconds()) as f,
+        ):
             # We have to set weights_only to False as there are some non-tensor
             # states like lr_scheduler.
             # pyre-fixme[16]: needs torch>=2.7

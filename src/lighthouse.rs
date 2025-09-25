@@ -8,37 +8,45 @@ use core::net::SocketAddr;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
-
 use std::time::Duration;
-use std::time::{Instant, SystemTime};
+use std::time::Instant;
+use std::time::SystemTime;
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
+use anyhow::anyhow;
 use askama::Template;
-use axum::{
-    extract::Path,
-    http::StatusCode,
-    response::{Html, IntoResponse},
-    routing::{get, post},
-    Router,
-};
+use axum::Router;
+use axum::extract::Path;
+use axum::http::StatusCode;
+use axum::response::Html;
+use axum::response::IntoResponse;
+use axum::routing::get;
+use axum::routing::post;
 use gethostname::gethostname;
-use log::{error, info};
+use log::error;
+use log::info;
 use structopt::StructOpt;
-use tokio::sync::broadcast;
 use tokio::sync::Mutex;
+use tokio::sync::broadcast;
 use tokio::task::JoinSet;
 use tokio::time::interval;
+use tonic::Request;
+use tonic::Response;
+use tonic::Status;
 use tonic::service::Routes;
-use tonic::transport::server::TcpIncoming;
 use tonic::transport::Server;
-use tonic::{Request, Response, Status};
+use tonic::transport::server::TcpIncoming;
 
 use crate::manager::manager_client_new;
-use crate::torchftpb::{
-    lighthouse_service_server::{LighthouseService, LighthouseServiceServer},
-    KillRequest, LighthouseHeartbeatRequest, LighthouseHeartbeatResponse, LighthouseQuorumRequest,
-    LighthouseQuorumResponse, Quorum, QuorumMember,
-};
+use crate::torchftpb::KillRequest;
+use crate::torchftpb::LighthouseHeartbeatRequest;
+use crate::torchftpb::LighthouseHeartbeatResponse;
+use crate::torchftpb::LighthouseQuorumRequest;
+use crate::torchftpb::LighthouseQuorumResponse;
+use crate::torchftpb::Quorum;
+use crate::torchftpb::QuorumMember;
+use crate::torchftpb::lighthouse_service_server::LighthouseService;
+use crate::torchftpb::lighthouse_service_server::LighthouseServiceServer;
 
 #[derive(Clone)]
 struct QuorumMemberDetails {
@@ -274,7 +282,7 @@ impl Lighthouse {
                 quorum_id: 0,
                 heartbeats: HashMap::new(),
             }),
-            opt: opt,
+            opt,
             local_addr: listener.local_addr()?,
             listener: Mutex::new(Some(listener)),
             change_logger: ChangeLogger::new(),
@@ -318,7 +326,7 @@ impl Lighthouse {
 
             let quorum = Quorum {
                 quorum_id: state.quorum_id,
-                participants: participants,
+                participants,
                 created: Some(SystemTime::now().into()),
             };
 
@@ -429,10 +437,10 @@ impl Lighthouse {
 
             StatusTemplate {
                 quorum_id: state.quorum_id,
-                num_participants: num_participants,
+                num_participants,
                 prev_quorum: state.prev_quorum.clone(),
-                quorum_status: quorum_status,
-                max_step: max_step,
+                quorum_status,
+                max_step,
 
                 heartbeats: state.heartbeats.clone(),
                 old_age_threshold: Instant::now()
@@ -603,11 +611,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::ops::Sub;
 
     use tonic::transport::Channel;
 
+    use super::*;
     use crate::net::connect;
     use crate::torchftpb::lighthouse_service_client::LighthouseServiceClient;
 
@@ -1171,10 +1179,12 @@ mod tests {
         });
         let second_response = client.quorum(second_request).await?;
         let second_quorum = second_response.into_inner().quorum.unwrap();
-        assert!(second_quorum
-            .participants
-            .iter()
-            .all(|p| p.replica_id != "joiner"));
+        assert!(
+            second_quorum
+                .participants
+                .iter()
+                .all(|p| p.replica_id != "joiner")
+        );
         assert_eq!(second_quorum.participants.len(), 2);
         assert_eq!(second_quorum.participants[0].replica_id, "replica0");
         assert_eq!(second_quorum.participants[1].replica_id, "replica1");
@@ -1190,19 +1200,23 @@ mod tests {
         });
         let third_response = client.quorum(second_request).await?;
         let third_quorum = third_response.into_inner().quorum.unwrap();
-        assert!(third_quorum
-            .participants
-            .iter()
-            .any(|p| p.replica_id == "joiner"));
+        assert!(
+            third_quorum
+                .participants
+                .iter()
+                .any(|p| p.replica_id == "joiner")
+        );
         assert_eq!(third_quorum.participants.len(), 3);
         assert_eq!(third_quorum.participants[2].step, 3);
 
         let join_result = joining_task.await?;
         let join_quorum = join_result.unwrap().into_inner().quorum.unwrap();
-        assert!(join_quorum
-            .participants
-            .iter()
-            .any(|p| p.replica_id == "joiner"));
+        assert!(
+            join_quorum
+                .participants
+                .iter()
+                .any(|p| p.replica_id == "joiner")
+        );
         assert_eq!(join_quorum.participants.len(), 3);
         assert_eq!(join_quorum.participants[2].step, 3);
 

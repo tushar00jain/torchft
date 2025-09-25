@@ -8,7 +8,11 @@
     }
   ],
   "search_path": [
-    {"site-package": "torchx"},
-    {"site-package": "parameterized"}
+    {
+      "site-package": "torchx"
+    },
+    {
+      "site-package": "parameterized"
+    }
   ]
 }

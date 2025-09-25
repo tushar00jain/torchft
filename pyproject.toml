@@ -44,6 +44,10 @@ torchft_lighthouse = "torchft._torchft:lighthouse_main"
 multi_line_output = 3
 combine_as_imports = true
 
+[tool.black]
+target-version = ["py312"]
+include = '\.pyi?$'
+
 [tool.pytest.ini_options]
 log_format = "%(asctime)s %(levelname)s %(message)s"
 log_date_format = "%Y-%m-%d %H:%M:%S"
