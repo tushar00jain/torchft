@@ -7,36 +7,48 @@
 use core::net::SocketAddr;
 use std::collections::HashMap;
 use std::collections::HashSet;
+#[cfg(test)]
+use std::println as info;
+#[cfg(test)]
+use std::println as warn;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use tokio::sync::broadcast;
+#[cfg(not(test))]
+use log::info;
+#[cfg(not(test))]
+use log::warn;
 use tokio::sync::Mutex;
+use tokio::sync::broadcast;
 use tokio::task::JoinSet;
 use tokio::time::sleep;
-use tonic::transport::server::TcpIncoming;
+use tonic::Request;
+use tonic::Response;
+use tonic::Status;
 use tonic::transport::Channel;
 use tonic::transport::Server;
-use tonic::{Request, Response, Status};
+use tonic::transport::server::TcpIncoming;
 
 use crate::net::connect;
 use crate::timeout::try_parse_grpc_timeout;
+use crate::torchftpb::CheckpointMetadataRequest;
+use crate::torchftpb::CheckpointMetadataResponse;
+use crate::torchftpb::KillRequest;
+use crate::torchftpb::KillResponse;
+use crate::torchftpb::LighthouseHeartbeatRequest;
+use crate::torchftpb::LighthouseQuorumRequest;
+use crate::torchftpb::LighthouseQuorumResponse;
+use crate::torchftpb::ManagerQuorumRequest;
+use crate::torchftpb::ManagerQuorumResponse;
+use crate::torchftpb::Quorum;
+use crate::torchftpb::QuorumMember;
+use crate::torchftpb::ShouldCommitRequest;
+use crate::torchftpb::ShouldCommitResponse;
 use crate::torchftpb::lighthouse_service_client::LighthouseServiceClient;
 use crate::torchftpb::manager_service_client::ManagerServiceClient;
-use crate::torchftpb::LighthouseQuorumResponse;
-use crate::torchftpb::{
-    manager_service_server::{ManagerService, ManagerServiceServer},
-    CheckpointMetadataRequest, CheckpointMetadataResponse, KillRequest, KillResponse,
-    LighthouseHeartbeatRequest, LighthouseQuorumRequest, ManagerQuorumRequest,
-    ManagerQuorumResponse, Quorum, QuorumMember, ShouldCommitRequest, ShouldCommitResponse,
-};
-
-#[cfg(not(test))]
-use log::{info, warn};
-
-#[cfg(test)]
-use std::{println as info, println as warn};
+use crate::torchftpb::manager_service_server::ManagerService;
+use crate::torchftpb::manager_service_server::ManagerServiceServer;
 
 // The replica_id string is of the form {replica_name}:{uuid} or just {uuid} (see torchft/manager.py)
 // We can parse the replica_id if it exists, otherwise we just use the uuid
@@ -124,13 +136,13 @@ impl Manager {
         let client = lighthouse_client_new(lighthouse_addr.clone(), connect_timeout).await?;
 
         Ok(Arc::new(Self {
-            replica_id: replica_id,
+            replica_id,
             lighthouse_addr,
             connect_timeout,
-            hostname: hostname,
+            hostname,
             store_address: store_addr,
-            world_size: world_size,
-            heartbeat_interval: heartbeat_interval,
+            world_size,
+            heartbeat_interval,
             state: Mutex::new(ManagerState {
                 checkpoint_metadata: HashMap::new(),
                 channel: tx,
@@ -142,7 +154,7 @@ impl Manager {
 
                 lighthouse_client: client,
             }),
-            local_addr: local_addr,
+            local_addr,
             listener: Mutex::new(Some(listener)),
             quorum_retries,
         }))
@@ -462,9 +474,7 @@ impl ManagerService for Arc<Manager> {
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        let reply = ShouldCommitResponse {
-            should_commit: should_commit,
-        };
+        let reply = ShouldCommitResponse { should_commit };
         Ok(Response::new(reply))
     }
 
@@ -593,18 +603,18 @@ fn compute_quorum_results(
     Ok(ManagerQuorumResponse {
         quorum_id: quorum.quorum_id,
         // address is used for looking up the checkpoint server address.
-        recover_src_manager_address: recover_src_manager_address,
-        recover_src_replica_rank: recover_src_replica_rank,
+        recover_src_manager_address,
+        recover_src_replica_rank,
         recover_dst_replica_ranks: recovery_assignments
             .get(&replica_rank)
             .map_or_else(Vec::new, |v| v.clone()),
         store_address: primary.store_address.clone(),
-        max_step: max_step,
-        max_replica_rank: max_replica_rank,
+        max_step,
+        max_replica_rank,
         max_world_size: max_participants.len() as i64,
         replica_rank: replica_rank as i64,
         replica_world_size: participants.len() as i64,
-        heal: heal,
+        heal,
         commit_failures: participants
             .iter()
             .map(|p| p.commit_failures)
@@ -615,12 +625,15 @@ fn compute_quorum_results(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::lighthouse::{Lighthouse, LighthouseOpt};
-    use crate::torchftpb::lighthouse_service_server::{LighthouseService, LighthouseServiceServer};
-    use crate::torchftpb::LighthouseHeartbeatResponse;
     use tokio::net::TcpListener;
     use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
+
+    use super::*;
+    use crate::lighthouse::Lighthouse;
+    use crate::lighthouse::LighthouseOpt;
+    use crate::torchftpb::LighthouseHeartbeatResponse;
+    use crate::torchftpb::lighthouse_service_server::LighthouseService;
+    use crate::torchftpb::lighthouse_service_server::LighthouseServiceServer;
 
     async fn should_commit(group_rank: i64, should_commit: bool) -> Result<ShouldCommitResponse> {
         let mut client = manager_client_new(
@@ -630,9 +643,9 @@ mod tests {
         .await?;
 
         let request = tonic::Request::new(ShouldCommitRequest {
-            group_rank: group_rank,
+            group_rank,
             step: 1,
-            should_commit: should_commit,
+            should_commit,
         });
         let resp = client.should_commit(request).await?;
 

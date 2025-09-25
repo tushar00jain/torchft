@@ -1,6 +1,6 @@
 import sys
 from datetime import timedelta
-from unittest import TestCase, skipIf, skipUnless
+from unittest import skipIf, skipUnless, TestCase
 
 import torch
 from torch.distributed import TCPStore

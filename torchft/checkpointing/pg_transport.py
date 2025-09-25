@@ -4,16 +4,16 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Callable, Generator, Optional, TypeVar, Union, cast
+from typing import Callable, cast, Generator, Optional, TypeVar, Union
 
 import torch
 from torch.distributed import Work
-from torch.distributed.tensor import DTensor, _DTensorSpec
+from torch.distributed.tensor import _DTensorSpec, DTensor
 from torch.utils._pytree import (
     KeyPath,
-    TreeSpec,
     tree_flatten_with_path,
     tree_unflatten,
+    TreeSpec,
 )
 
 from torchft.checkpointing.transport import CheckpointTransport

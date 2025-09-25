@@ -3,13 +3,13 @@ import logging
 import os
 from contextlib import ExitStack
 from datetime import timedelta
-from typing import Any, Dict, List, cast
+from typing import Any, cast, Dict, List
 
 import torch
 from torch import nn
 from torch.distributed.tensor import DTensor
 
-from torchft.device_mesh import ManagedDeviceMesh, ft_init_device_mesh
+from torchft.device_mesh import ft_init_device_mesh, ManagedDeviceMesh
 from torchft.local_sgd import DiLoCo
 from torchft.manager import Manager
 from torchft.manager_integ_test import MyModel, Runner
