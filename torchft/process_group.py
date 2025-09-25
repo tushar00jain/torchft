@@ -738,7 +738,7 @@ class ProcessGroupNCCL(ProcessGroupWrapper):
         self._use_abort: bool = torch.cuda.nccl.version() >= (2, 25)
 
         self._errored: Optional[Exception] = None
-        self._rank: int = 0
+        self._rank: int = dist.get_rank()
 
         NONBLOCKING_TIMEOUT_ENV = "TORCH_NCCL_NONBLOCKING_TIMEOUT"
         if NONBLOCKING_TIMEOUT_ENV not in os.environ:
@@ -788,7 +788,6 @@ class ProcessGroupNCCL(ProcessGroupWrapper):
         from torch.distributed import ProcessGroupNCCL as BaseProcessGroupNCCL
 
         self._errored = None
-        self._rank = rank
 
         # pyre-fixme[16]: no attribute ProcessGroupNCCL
         opts = BaseProcessGroupNCCL.Options()
