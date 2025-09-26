@@ -648,6 +648,8 @@ class Manager:
             # We use the replica rank and world as we want all replicas in the PG.
             try:
                 with torch.profiler.record_function("torchft::manager::_pg::configure"):
+                    if torch.accelerator.is_available():
+                        torch.accelerator.synchronize()
                     self._pg.configure(
                         store_prefixed_addr, replica_rank, replica_world_size
                     )
