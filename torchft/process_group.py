@@ -1223,11 +1223,13 @@ class ManagedProcessGroup(ProcessGroupWrapper):
         self._manager = manager
 
     def allreduce(self, tensors: List[torch.Tensor], opts: object) -> Work:
+        assert len(tensors) == 1
+
         if isinstance(opts, ReduceOp):
-            return self._manager.allreduce(tensors, reduce_op=opts)
+            return self._manager.allreduce(tensors[0], reduce_op=opts)
 
         if isinstance(opts, AllreduceOptions):
-            return self._manager.allreduce(tensors, reduce_op=opts.reduceOp)
+            return self._manager.allreduce(tensors[0], reduce_op=opts.reduceOp)
 
         assert False, "unreachable"
 
