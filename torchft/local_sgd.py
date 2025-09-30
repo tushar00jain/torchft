@@ -259,16 +259,21 @@ class _StreamingDiLoCoFragment:
         fragment_key = f"StreamingDiLoCoFragment_{self._fragment_id}"
 
         # Define load function for this fragment
-        def load_fn(state_dict: Dict[str, torch.Tensor]) -> None:
-            for name, param in state_dict.items():
+        def load_fn(state_dict: Dict[str, Dict[str, torch.Tensor]]) -> None:
+            for name, param in state_dict["original_parameters"].items():
                 if name in self.original_parameters:
                     self.original_parameters[name].copy_(param)
 
+            self._outer_optimizer.load_state_dict(state_dict["outer_optimizer"])
+
         # Define save function for this fragment
-        def save_fn() -> Dict[str, torch.Tensor]:
+        def save_fn() -> Dict[str, Dict[str, torch.Tensor]]:
             return {
-                name: extract_local_tensor(param)
-                for name, param in self.original_parameters.items()
+                "outer_optimizer": self._outer_optimizer.state_dict(),
+                "original_parameters": {
+                    name: extract_local_tensor(param)
+                    for name, param in self.original_parameters.items()
+                },
             }
 
         # Register the functions with the manager

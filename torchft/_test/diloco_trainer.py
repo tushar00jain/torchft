@@ -227,10 +227,6 @@ class DiLoCoTrainer:
         self.model.to(self.device)
 
         self.inner_optimizer.load_state_dict(state_dict["inner_optim"])
-        for i, optimizer in enumerate(self.outer_optimizers):
-            optimizer.load_state_dict(
-                cast(dict[str, torch.Tensor], state_dict[f"outer_optim"][f"{i}"])
-            )
 
     def state_dict(self) -> Dict[str, Dict[str, object]]:
         """
@@ -244,10 +240,6 @@ class DiLoCoTrainer:
         return {
             "model": self.model.state_dict(),
             "inner_optim": self.inner_optimizer.state_dict(),
-            "outer_optim": {
-                f"{i}": optimizer.state_dict()
-                for i, optimizer in enumerate(self.outer_optimizers)
-            },
         }
 
     def train_loop(self) -> dict[str, Any]:
