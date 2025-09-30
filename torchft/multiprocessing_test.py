@@ -6,11 +6,11 @@ import torch.multiprocessing as mp
 from torchft.multiprocessing import _MonitoredPipe
 
 
-def pipe_get(q: "Connection[object, object]") -> None:
+def pipe_get(q: "Connection[object, object]") -> None:  # type: ignore
     q.recv()
 
 
-def pipe_put(q: "Connection[object, object]") -> None:
+def pipe_put(q: "Connection[object, object]") -> None:  # type: ignore
     q.recv()
     q.send(1)
 

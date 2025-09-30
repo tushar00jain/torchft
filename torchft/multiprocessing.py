@@ -8,7 +8,7 @@ import torch.multiprocessing as mp
 
 
 class _MonitoredPipe:
-    def __init__(self, pipe: "Connection[object, object]") -> None:
+    def __init__(self, pipe: "Connection[object, object]") -> None:  # type: ignore
         self._pipe = pipe
 
     def send(self, obj: object) -> None:
