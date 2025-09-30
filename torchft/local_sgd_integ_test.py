@@ -140,29 +140,29 @@ def assert_equal_global_state(
     for step in rep0.keys():
         for i in range(n_fragments):
             torch.testing.assert_close(
-                rep1[step]["user"][f"StreamingDiLoCoFragment_{i}"],
-                rep0[step]["user"][f"StreamingDiLoCoFragment_{i}"],
+                rep1[step]["user"][f"StreamingDiLoCoFragment_{i}"][
+                    "original_parameters"
+                ],
+                rep0[step]["user"][f"StreamingDiLoCoFragment_{i}"][
+                    "original_parameters"
+                ],
                 check_device=False,
                 msg=f"{step=} {i=}",
             )
-        # Check all outer optimizers
-        for i in range(
-            len(
-                cast(
-                    dict[str, dict[str, torch.Tensor]],
-                    rep0[step]["user"]["default"]["outer_optim"],
-                ).keys()
-            )
-        ):
+            # Check all outer optimizers
             torch.testing.assert_close(
                 cast(
                     dict[str, dict[str, torch.Tensor]],
-                    rep1[step]["user"]["default"]["outer_optim"],
-                )[f"{i}"],
+                    rep1[step]["user"][f"StreamingDiLoCoFragment_{i}"][
+                        "outer_optimizer"
+                    ],
+                ),
                 cast(
                     dict[str, dict[str, torch.Tensor]],
-                    rep0[step]["user"]["default"]["outer_optim"],
-                )[f"{i}"],
+                    rep0[step]["user"][f"StreamingDiLoCoFragment_{i}"][
+                        "outer_optimizer"
+                    ],
+                ),
                 check_device=False,
             )
 

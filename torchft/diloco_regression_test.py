@@ -221,12 +221,18 @@ class MockDiLoCoTrainer(DiLoCoTrainer):
 
                     for i in range(self.n_fragments):
                         value = cast(
-                            dict[str, torch.Tensor],
+                            dict[str, dict[str, torch.Tensor]],
                             user_state_dict[f"StreamingDiLoCoFragment_{i}"],
                         )
                         parameter_history["global_parameter_history"][local_step][
                             f"layers.{i}.weight"
-                        ] = value["weight"].data.clone().detach().cpu().tolist()
+                        ] = (
+                            value["original_parameters"]["weight"]
+                            .data.clone()
+                            .detach()
+                            .cpu()
+                            .tolist()
+                        )
 
                     manager_steps.add(manager_curr_step)
 
