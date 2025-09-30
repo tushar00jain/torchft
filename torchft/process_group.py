@@ -1443,8 +1443,8 @@ class ProcessGroupBaby(ProcessGroup):
         store_addr: str,
         rank: int,
         world_size: int,
-        req_pipe: "Connection[object, object]",
-        future_pipe: "Connection[object, object]",
+        req_pipe: "Connection[object, object]",  # type: ignore
+        future_pipe: "Connection[object, object]",  # type: ignore
         curr_device: int,
     ) -> None:
         try:
