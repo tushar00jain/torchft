@@ -791,6 +791,7 @@ class ProcessGroupNCCL(ProcessGroupWrapper):
         # pyre-fixme[16]: no attribute ProcessGroupNCCL
         opts = BaseProcessGroupNCCL.Options()
         opts.config.blocking = False
+        opts.global_ranks_in_group = list(range(world_size))
 
         pg = BaseProcessGroup(store, rank, world_size)
         pg._set_default_backend(ProcessGroup.BackendType.NCCL)
