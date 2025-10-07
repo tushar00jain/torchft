@@ -423,7 +423,9 @@ class Manager:
                     torch.accelerator.current_stream(),
                 )
             else:
-                work = self._pg.allreduce([tensor], reduce_op)
+                opts = AllreduceOptions()
+                opts.reduceOp = reduce_op
+                work = self._pg.allreduce([tensor], opts)
 
             # schedule grad normalization as a continuation
             # on the Future
