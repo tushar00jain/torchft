@@ -11,6 +11,7 @@ This module implements a fault tolerant version of LocalSGD and related methods.
 
 import logging
 import math
+import os
 from contextlib import nullcontext
 from types import TracebackType
 from typing import Any, Dict, List, Optional, Tuple, Type
@@ -24,6 +25,8 @@ from torch.utils.hooks import RemovableHandle
 from torchft.manager import Manager
 
 logger: logging.Logger = logging.getLogger(__name__)
+
+USE_BUCKETIZATION_ENV: str = "TORCHFT_USE_BUCKETIZATION"
 
 
 def extract_local_tensor(t: torch.Tensor) -> torch.Tensor:
@@ -171,7 +174,7 @@ class LocalSGD:
 
 
 class _StreamingDiLoCoFragment:
-    bucket_cap_mb: int = 32 * 1024 * 1024
+    bucket_cap_mb: int = 1 * 1024 * 1024 * 1024
     use_bucketization: bool = False
 
     def __init__(
@@ -220,7 +223,11 @@ class _StreamingDiLoCoFragment:
         if bucket_cap_mb is not None:
             self.bucket_cap_mb = int(bucket_cap_mb * 1024 * 1024)
 
-        self.use_bucketization = use_bucketization
+        if os.getenv(USE_BUCKETIZATION_ENV, "False") == "True":
+            self.use_bucketization = True
+        else:
+            self.use_bucketization = use_bucketization
+
         self.should_quantize = should_quantize
 
         self._grads: Dict[str, torch.Tensor] = {}
@@ -535,14 +542,9 @@ class _StreamingDiLoCoFragment:
             def callback(
                 fut: torch.futures.Future[list[torch.Tensor]],
             ) -> list[torch.Tensor]:
-                with torch.cuda.stream(self._stream) if self._stream else nullcontext():
-                    nonlocal bucket_tensors, flat_buffer
-                    # Setup stream dependency
-                    fut.wait()
-                    for t, pack_offset, numel in bucket_tensors:
-                        t.copy_(
-                            flat_buffer[pack_offset : pack_offset + numel].view_as(t)
-                        )
+                nonlocal bucket_tensors, flat_buffer
+                for t, pack_offset, numel in bucket_tensors:
+                    t.copy_(flat_buffer[pack_offset : pack_offset + numel].view_as(t))
 
                 return []
 
