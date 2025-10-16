@@ -47,7 +47,7 @@ def main(argv: list[str]) -> None:
 
         with _timeit("init_pg"):
             pg = ProcessGroupBabyNCCL(timeout=timeout)
-            pg.configure(store_addr=store_addr, rank=rank, world_size=2)
+            pg.configure(store_addr=store_addr, replica_id="0", rank=rank, world_size=2)
 
             t = torch.zeros(10, device=device, dtype=torch.float32)
             pg.allreduce([t], dist.ReduceOp.SUM).wait(timeout=timeout)

@@ -16,7 +16,7 @@ from opentelemetry.sdk._logs.export import (
 )
 from opentelemetry.sdk.resources import Resource
 
-_LOGGER_PROVIDER: LoggerProvider | None = None
+_LOGGER_PROVIDER: dict[str, LoggerProvider] = {}
 # Path to the file containing OTEL resource attributes
 TORCHFT_OTEL_RESOURCE_ATTRIBUTES_JSON = "TORCHFT_OTEL_RESOURCE_ATTRIBUTES_JSON"
 
@@ -39,7 +39,15 @@ class TeeLogExporter(LogExporter):
             e.shutdown()
 
 
-def setup_logger() -> None:
+def setup_logger(name: str) -> None:
+    if os.environ.get("TORCHFT_USE_OTEL", "false") == "false":
+        return
+
+    global _LOGGER_PROVIDER
+
+    if name in _LOGGER_PROVIDER:
+        return
+
     torchft_otel_resource_attributes_json = os.environ.get(
         TORCHFT_OTEL_RESOURCE_ATTRIBUTES_JSON
     )
@@ -47,7 +55,7 @@ def setup_logger() -> None:
     if torchft_otel_resource_attributes_json is not None:
         with open(torchft_otel_resource_attributes_json) as f:
             attributes = json.loads(f.read())
-            resource = Resource.create(attributes=attributes)
+            resource = Resource.create(attributes=attributes[name])
     else:
         resource = Resource.create()
 
@@ -65,44 +73,39 @@ def setup_logger() -> None:
     logger_provider.add_log_record_processor(BatchLogRecordProcessor(exporter))
     handler = LoggingHandler(level=logging.NOTSET, logger_provider=logger_provider)
 
-    logging.getLogger().setLevel(logging.NOTSET)
+    # Attach OTLP handler to otel logger
+    logging.getLogger(name).addHandler(handler)
 
-    # Attach OTLP handler to root logger
-    logging.getLogger().addHandler(handler)
-
-    global _LOGGER_PROVIDER
-    _LOGGER_PROVIDER = logger_provider
+    _LOGGER_PROVIDER[name] = logger_provider
 
 
 def shutdown() -> None:
-    assert _LOGGER_PROVIDER is not None
-    _LOGGER_PROVIDER.shutdown()
+    for logger_provider in _LOGGER_PROVIDER.values():
+        logger_provider.shutdown()
 
 
 # Example usage of the logger
 def main() -> None:
-    setup_logger()
+    logging.getLogger().setLevel(logging.INFO)
+    setup_logger("torchft_test")
 
     while True:
         time.sleep(1)
-        logging.debug(
-            "Quick zephyrs blow, vexing daft Jim.",
-            extra={
-                "test_attr": "value1",
-            },
-        )
-        logging.info("Jackdaws love my big sphinx of quartz.")
+        loggers = [
+            logging.getLogger("torchft_test"),
+            logging.getLogger("myapp.area1"),
+            logging.getLogger(),
+        ]
 
-        # Create different namespaced logger
-        logger = logging.getLogger("myapp.area1")
-
-        logger.debug(
-            "Quick zephyrs blow, vexing daft Jim.",
-            extra={
-                "test_attr": "value2",
-            },
-        )
-        logger.info("How quickly daft jumping zebras vex.")
+        for i, logger in enumerate(loggers):
+            # only this should be picked up by OTEL when using otel logger
+            logger.info(
+                "Quick zephyrs blow, vexing daft Jim.",
+                extra={
+                    "test_attr": f"value{i}",
+                },
+            )
+            logger.debug("Jackdaws love my big sphinx of quartz.")
 
         print("Example done; exiting...")
 

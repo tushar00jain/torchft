@@ -27,6 +27,7 @@ class PGTransportTest(TestCase):
             pg = ProcessGroupGloo()
             pg.configure(
                 store_addr=f"localhost:{store.port}/prefix",
+                replica_id="0",
                 rank=rank,
                 world_size=world_size,
             )
@@ -52,6 +53,7 @@ class PGTransportTest(TestCase):
             pg = ProcessGroupBabyNCCL(timeout=timeout)
             pg.configure(
                 store_addr=f"localhost:{store.port}/prefix",
+                replica_id="0",
                 rank=rank,
                 world_size=world_size,
             )
@@ -78,6 +80,7 @@ class PGTransportTest(TestCase):
             pg = ProcessGroupBabyNCCL(timeout=timeout)
             pg.configure(
                 store_addr=f"localhost:{store.port}/prefix",
+                replica_id="0",
                 rank=rank,
                 world_size=world_size,
             )

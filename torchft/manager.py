@@ -216,8 +216,14 @@ class Manager:
                 before raising an exception. If None, will retry indefinitely.
             quorum_retries: the number of times to retry the quorum before crashing
         """
+        self.quorum_logger: logging.Logger = logging.getLogger("torchft_quorums")
+        self.commits_logger: logging.Logger = logging.getLogger("torchft_commits")
+        self.errors_logger: logging.Logger = logging.getLogger("torchft_errors")
+
         self._load_state_dict_fns: Dict[str, Callable[[object], None]] = {}
         self._user_state_dicts: Dict[str, Callable[[], object]] = {}
+
+        self._replica_id = replica_id
 
         # Protects state dict
         self._state_dict_lock = RWLock(timeout=timeout.total_seconds())
@@ -642,6 +648,16 @@ class Manager:
                 self._participating_replica_rank = None
 
         if quorum_id != self._quorum_id:
+            self.quorum_logger.info(
+                "",
+                extra={
+                    "job_id": os.environ.get("JOB_ID", "unknown"),
+                    "replica_id": self._replica_id,
+                    "rank": self._group_rank,
+                    "quorum_id": quorum_id,
+                    "step": max_step,
+                },
+            )
             store_prefixed_addr = (
                 f"{store_address}/torchft/{quorum_id}/{self._group_rank}"
             )
@@ -653,7 +669,10 @@ class Manager:
                     if torch.accelerator.is_available():
                         torch.accelerator.synchronize()
                     self._pg.configure(
-                        store_prefixed_addr, replica_rank, replica_world_size
+                        store_prefixed_addr,
+                        self._replica_id if self._replica_id is not None else "0",
+                        replica_rank,
+                        replica_world_size,
                     )
                 self._quorum_id = quorum_id
             except Exception as e:
@@ -815,6 +834,18 @@ class Manager:
         )
         self._logger.info(
             f"should_commit={should_commit} enough_replicas={enough_replicas}, errored={self._errored}"
+        )
+
+        self.commits_logger.info(
+            "",
+            extra={
+                "job_id": os.environ.get("JOB_ID", "unknown"),
+                "replica_id": self._replica_id,
+                "rank": self._group_rank,
+                "quorum_id": self._quorum_id,
+                "step": self._step,
+                "commit_result": should_commit,
+            },
         )
 
         self._checkpoint_transport.disallow_checkpoint()
