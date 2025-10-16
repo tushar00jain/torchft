@@ -8,6 +8,7 @@ from torchft.data import DistributedSampler
 from torchft.ddp import DistributedDataParallel
 from torchft.manager import Manager
 from torchft.optim import OptimizerWrapper as Optimizer
+from torchft.otel import setup_logger
 from torchft.process_group import (
     ProcessGroupBabyNCCL,
     ProcessGroupBabyXCCL,
@@ -15,6 +16,10 @@ from torchft.process_group import (
     ProcessGroupNCCL,
     ProcessGroupXCCL,
 )
+
+setup_logger("torchft_quorums")
+setup_logger("torchft_commits")
+setup_logger("torchft_errors")
 
 __all__ = (
     "DistributedDataParallel",
