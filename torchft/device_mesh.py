@@ -10,6 +10,7 @@ from torch.distributed import (
     init_device_mesh,
     ProcessGroup as BaseProcessGroup,
 )
+from torch.distributed._mesh_layout import _MeshLayout
 from torch.distributed.tensor.device_mesh import _mesh_resources
 
 from torchft.manager import Manager
@@ -69,12 +70,15 @@ class ManagedDeviceMesh(DeviceMesh):
         self.replicate_dim_name: str = mesh_dim_names[replicate_dim]
         self.parent = parent
         self.flatten_meshes: Dict[str, DeviceMesh] = {}
+        self._flatten_mapping: Dict[str, "DeviceMesh"] = {}
         self._device_type: str
         if mesh is not None:
             self._device_type = mesh.device_type
+            self._layout: _MeshLayout = mesh._layout
         else:
             assert parent is not None
             self._device_type = parent.device_type
+            self._layout: _MeshLayout = parent._layout
         self._flatten_mesh_list: tuple[DeviceMesh, ...] = tuple()
         self._thread_id: Optional[int] = None
         self._hash: Optional[int] = None
